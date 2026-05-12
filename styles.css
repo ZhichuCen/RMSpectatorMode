@@ -44,31 +44,67 @@ button {
   top: 0;
   right: 0;
   z-index: 20;
-  display: grid;
-  place-items: start end;
-  width: 76px;
-  height: 76px;
-  color: #ffffff;
+  width: 80px;
+  height: 80px;
   text-decoration: none;
 }
 
+.github-corner svg {
+  display: block;
+  width: 80px;
+  height: 80px;
+  color: #ffffff;
+}
+
+.octo-bg {
+  fill: #151513;
+}
+
+.octo-arm,
+.octo-body {
+  fill: currentColor;
+  transform-origin: 130px 106px;
+}
+
+.github-corner:hover .octo-arm {
+  animation: octocat-wave 560ms ease-in-out;
+}
+
+@keyframes octocat-wave {
+  0%,
+  100% {
+    transform: rotate(0);
+  }
+
+  20%,
+  60% {
+    transform: rotate(-25deg);
+  }
+
+  40%,
+  80% {
+    transform: rotate(10deg);
+  }
+}
+
+@media (max-width: 720px) {
+  .github-corner:hover .octo-arm {
+    animation: none;
+  }
+
+  .github-corner .octo-arm {
+    animation: octocat-wave 560ms ease-in-out;
+  }
+}
+
+/* legacy fallback for cached markup */
 .github-corner::before {
   position: absolute;
   inset: 0;
+  display: none;
   background: linear-gradient(135deg, transparent 0 50%, var(--brand) 50% 100%);
   content: "";
   transition: filter 0.16s ease;
-}
-
-.github-corner:hover::before {
-  filter: brightness(1.14);
-}
-
-.github-corner svg {
-  position: relative;
-  width: 24px;
-  height: 24px;
-  margin: 10px 10px 0 0;
 }
 
 .app-header,
@@ -540,6 +576,11 @@ video {
   }
 
   .github-corner {
+    width: 62px;
+    height: 62px;
+  }
+
+  .github-corner svg {
     width: 62px;
     height: 62px;
   }
