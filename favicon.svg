@@ -1,6 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="12" fill="#0e1116"/>
-  <path d="M14 18h36v28H14z" fill="#2ec5ff" opacity=".2"/>
-  <path d="M20 24h24v16H20z" fill="none" stroke="#86ddff" stroke-width="3"/>
-  <circle cx="32" cy="32" r="5" fill="#86ddff"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="RoboMaster Spectator Console">
+  <rect width="64" height="64" rx="14" fill="#101214"/>
+  <path d="M14 17h36v30H14z" fill="#191d21" stroke="#313941" stroke-width="3"/>
+  <path d="M20 24h11v8H20zM33 24h11v8H33zM20 34h11v7H20zM33 34h11v7H33z" fill="#2fbf9f"/>
+  <path d="M14 17h36v7H14z" fill="#d34040"/>
+  <path d="M49 19l7 7v23a7 7 0 0 1-7 7H26l-7-7h30z" fill="#050607" opacity=".36"/>
 </svg>

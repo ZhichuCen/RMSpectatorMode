@@ -12,9 +12,10 @@
     <script src="./app.js" defer></script>
   </head>
   <body>
-    <a class="github-corner" href="https://github.com" target="_blank" rel="noreferrer" aria-label="前往 GitHub 仓库">
-      <i data-lucide="github" aria-hidden="true"></i>
-      <span>GitHub</span>
+    <a class="github-corner" href="https://github.com/ZhichuCen/RMSpectatorMode" target="_blank" rel="noreferrer" aria-label="前往 GitHub 仓库">
+      <svg viewBox="0 0 98 96" aria-hidden="true" focusable="false">
+        <path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M49 0C21.9 0 0 22 0 49.1c0 21.7 14 40 33.5 46.5 2.5.5 3.4-1.1 3.4-2.4 0-1.2-.1-5.2-.1-9.4-13.6 3-16.5-5.8-16.5-5.8-2.2-5.7-5.5-7.2-5.5-7.2-4.5-3.1.3-3 .3-3 5 .3 7.6 5.1 7.6 5.1 4.4 7.5 11.5 5.3 14.3 4.1.4-3.2 1.7-5.3 3.1-6.5-10.9-1.2-22.3-5.4-22.3-24.2 0-5.4 1.9-9.8 5.1-13.2-.5-1.2-2.2-6.3.5-13 0 0 4.2-1.3 13.5 5 3.9-1.1 8.1-1.6 12.2-1.6 4.1 0 8.3.6 12.2 1.6 9.3-6.3 13.5-5 13.5-5 2.7 6.7 1 11.8.5 13 3.2 3.4 5.1 7.8 5.1 13.2 0 18.8-11.5 23-22.4 24.2 1.8 1.5 3.3 4.5 3.3 9.1 0 6.6-.1 11.9-.1 13.5 0 1.3.9 2.9 3.4 2.4C84 89 98 70.7 98 49.1 98 22 76.1 0 49 0Z"/>
+      </svg>
     </a>
     <header class="app-header">
       <div>
@@ -22,7 +23,7 @@
         <h1 id="eventTitle">赛事多视角监看系统</h1>
       </div>
       <div class="header-actions">
-        <span class="version-pill">v1.2.0</span>
+        <span class="version-pill">v1.2.1</span>
         <div class="status-pill" id="feedStatus" aria-live="polite">
           <span class="status-dot"></span>
           <span>准备加载</span>
@@ -60,31 +61,17 @@
 
       <section class="viewer-layout" id="viewerLayout">
         <article class="main-view" aria-label="主观看视角">
-          <div class="video-frame main-frame">
-            <video id="mainVideo" class="main-video" controls autoplay muted playsinline></video>
-            <div class="video-overlay">
-              <div>
-                <p id="mainZone" class="video-kicker">赛区</p>
-                <h2 id="mainTitle">等待直播源</h2>
-              </div>
-              <div class="overlay-actions">
-                <span id="mainQuality" class="quality-badge">--</span>
-                <button class="icon-button" id="muteButton" type="button" aria-label="切换静音">
-                  <i data-lucide="volume-x" aria-hidden="true"></i>
-                </button>
-              </div>
-            </div>
-            <div id="mainError" class="video-error" hidden>
-              <p>当前视角加载失败。</p>
-              <button class="text-button" id="retryMainButton" type="button">重试</button>
-            </div>
+          <div id="mainGrid" class="main-grid"></div>
+          <div id="mainEmpty" class="empty-state main-empty" hidden>
+            <i data-lucide="radio" aria-hidden="true"></i>
+            <p>等待直播源。</p>
           </div>
         </article>
 
-        <aside class="side-panel" aria-label="视角列表">
+        <aside id="sidePanel" class="side-panel" aria-label="视角列表">
           <div class="panel-heading">
-            <h2>可切换视角</h2>
-            <span>小窗优先低清</span>
+            <h2 id="smallPanelTitle">可切换视角</h2>
+            <span id="smallPanelHint">小窗优先低清</span>
           </div>
           <div id="thumbGrid" class="thumb-grid"></div>
           <div id="emptyState" class="empty-state" hidden>
