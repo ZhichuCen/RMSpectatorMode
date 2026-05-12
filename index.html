@@ -4,19 +4,25 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="RoboMaster 多视角直播监看工具">
-    <title>RoboMaster 多视角直播</title>
+    <title>RoboMaster Spectator Console</title>
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg">
     <link rel="stylesheet" href="./styles.css">
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js" defer></script>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
     <script src="./app.js" defer></script>
   </head>
   <body>
+    <a class="github-corner" href="https://github.com" target="_blank" rel="noreferrer" aria-label="前往 GitHub 仓库">
+      <i data-lucide="github" aria-hidden="true"></i>
+      <span>GitHub</span>
+    </a>
     <header class="app-header">
       <div>
-        <p class="eyebrow">RoboMaster Live</p>
-        <h1 id="eventTitle">多视角直播</h1>
+        <p class="eyebrow">RoboMaster Spectator Console</p>
+        <h1 id="eventTitle">赛事多视角监看系统</h1>
       </div>
       <div class="header-actions">
+        <span class="version-pill">v1.2.0</span>
         <div class="status-pill" id="feedStatus" aria-live="polite">
           <span class="status-dot"></span>
           <span>准备加载</span>
@@ -38,13 +44,21 @@
           <span>筛选视角</span>
           <input id="viewFilter" type="search" placeholder="英雄、工程、无人机、主视角">
         </label>
+        <label class="field">
+          <span>布局</span>
+          <select id="layoutSelect"></select>
+        </label>
+        <label class="field">
+          <span>大画面分辨率</span>
+          <select id="mainResolutionSelect"></select>
+        </label>
         <div class="meta-row">
           <span id="lastUpdated">尚未更新</span>
           <span id="sourceCount">0 路信号</span>
         </div>
       </section>
 
-      <section class="viewer-layout">
+      <section class="viewer-layout" id="viewerLayout">
         <article class="main-view" aria-label="主观看视角">
           <div class="video-frame main-frame">
             <video id="mainVideo" class="main-video" controls autoplay muted playsinline></video>
@@ -78,15 +92,6 @@
             <p>当前赛区还没有可用第一视角。</p>
           </div>
         </aside>
-      </section>
-
-      <section class="recording-note" aria-labelledby="recordingTitle">
-        <h2 id="recordingTitle">录制建议</h2>
-        <p>
-          GitHub Pages 只能运行纯前端，浏览器内录制 HLS 可做实验按钮，但长时间稳定性、音频捕获、
-          多路编码和文件保存都不可靠。首版建议用 OBS 录浏览器窗口；如果要保存原始直播流，
-          用页面里最新读取到的 m3u8 链接配合 ffmpeg 或 Streamlink。
-        </p>
       </section>
     </main>
   </body>
