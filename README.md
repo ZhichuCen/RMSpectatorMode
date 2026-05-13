@@ -4,7 +4,7 @@
 
 ## 功能
 
-- 实时读取 `https://rm-static.djicdn.com/live_json/live_game_info.json`
+- 实时读取 `https://rm-static.djicdn.com/live_json/live_game_info.json`，并在 GitHub Pages 部署时禁用 Referer 以避开 DJI CDN 的来源拦截
 - 自动解析赛区主视角 `zoneLiveString` 和机器人第一视角 `fpvData[].sources`
 - 主画面使用最高可用清晰度，优先 `1080p/high`
 - 小窗预览使用低清，优先 `540p/low`，降低多路监看的带宽占用

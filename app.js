@@ -137,7 +137,10 @@ async function loadFeed() {
   setFeedStatus("warn", "正在更新");
 
   try {
-    const response = await fetch(`${FEED_URL}?_=${Date.now()}`, { cache: "no-store" });
+    const response = await fetch(`${FEED_URL}?_=${Date.now()}`, {
+      cache: "no-store",
+      referrerPolicy: "no-referrer",
+    });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
     const payload = await response.json();
@@ -150,11 +153,16 @@ async function loadFeed() {
     setFeedStatus("ok", "已连接实时源");
   } catch (error) {
     console.error(error);
-    setFeedStatus("error", "实时源更新失败");
+    setFeedStatus("error", feedErrorMessage(error));
     render();
   } finally {
     state.isLoading = false;
   }
+}
+
+function feedErrorMessage(error) {
+  const status = String(error?.message || "").match(/^HTTP (\d{3})$/)?.[1];
+  return status ? `实时源更新失败 (${status})` : "实时源更新失败";
 }
 
 function parseLiveInfo(payload) {
