@@ -18,6 +18,11 @@ const PREVIEW_MODES = [
   { id: "smart", label: "智能省流" },
   { id: "poster", label: "头像占位" },
 ];
+const FOCUS_SIDES = [
+  { id: "all", label: "全部视角优先" },
+  { id: "red", label: "红方优先" },
+  { id: "blue", label: "蓝方优先" },
+];
 const state = {
   zones: [],
   eventName: "赛事多视角监看系统",
@@ -33,6 +38,8 @@ const state = {
   layout: "one-plus",
   mainResolution: "high",
   previewMode: "smart",
+  focusSide: "all",
+  cleanMode: false,
   thumbObserver: null,
 };
 
@@ -42,6 +49,7 @@ document.addEventListener("DOMContentLoaded", () => {
   renderLayoutOptions();
   renderResolutionOptions();
   renderPreviewModeOptions();
+  renderFocusSideOptions();
   applyLayoutConfig(false);
   renderIcons();
   loadFeed();
@@ -57,6 +65,8 @@ function bindRefs() {
     "layoutSelect",
     "mainResolutionSelect",
     "previewModeSelect",
+    "focusSideSelect",
+    "cleanModeButton",
     "viewerLayout",
     "mainGrid",
     "mainEmpty",
@@ -101,6 +111,19 @@ function bindEvents() {
     state.previewMode = event.target.value;
     renderThumbs();
     renderIcons();
+  });
+  refs.focusSideSelect.addEventListener("change", (event) => {
+    state.focusSide = event.target.value;
+    renderThumbs();
+    renderIcons();
+  });
+  refs.cleanModeButton.addEventListener("click", () => {
+    setCleanMode(!state.cleanMode);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && state.cleanMode) {
+      setCleanMode(false);
+    }
   });
   refs.mainGrid.addEventListener("click", (event) => {
     const retryButton = event.target.closest("[data-action='retry-main']");
@@ -168,6 +191,13 @@ function renderPreviewModeOptions() {
   refs.previewModeSelect.value = state.previewMode;
 }
 
+function renderFocusSideOptions() {
+  refs.focusSideSelect.innerHTML = FOCUS_SIDES.map(
+    (item) => `<option value="${item.id}">${item.label}</option>`,
+  ).join("");
+  refs.focusSideSelect.value = state.focusSide;
+}
+
 function applyLayoutConfig(resetResolution) {
   const layout = getCurrentLayout();
   if (resetResolution) {
@@ -177,12 +207,33 @@ function applyLayoutConfig(resetResolution) {
   refs.mainResolutionSelect.value = state.mainResolution;
   refs.mainResolutionSelect.disabled = layout.mainCount === 0;
   refs.previewModeSelect.value = state.previewMode;
+  refs.focusSideSelect.value = state.focusSide;
   refs.smallPanelTitle.textContent = layout.mainCount === 0 ? "全部视角" : "可切换视角";
   refs.smallPanelHint.textContent = state.previewMode === "poster"
     ? "停止小窗拉流"
     : layout.mainCount === 0
       ? "4x4 低清预览"
       : "可见小窗低清拉流";
+}
+
+function setCleanMode(enabled) {
+  state.cleanMode = Boolean(enabled);
+  document.body.classList.toggle("clean-mode", state.cleanMode);
+  refs.cleanModeButton.setAttribute("aria-pressed", String(state.cleanMode));
+  refs.cleanModeButton.classList.toggle("active", state.cleanMode);
+  refs.cleanModeButton.querySelector("span").textContent = state.cleanMode ? "退出纯净" : "纯净";
+  const icon = refs.cleanModeButton.querySelector("i");
+  if (icon) icon.setAttribute("data-lucide", state.cleanMode ? "monitor-x" : "monitor-up");
+  refs.viewerLayout.dataset.clean = state.cleanMode ? "true" : "false";
+  renderThumbs();
+  syncVideoControls();
+  renderIcons();
+}
+
+function syncVideoControls(root = document) {
+  root.querySelectorAll(".main-frame video").forEach((video) => {
+    video.controls = !state.cleanMode;
+  });
 }
 
 async function loadFeed() {
@@ -233,6 +284,7 @@ function parseLiveInfo(payload) {
             zoneName,
             title: `${zoneName} 主视角`,
             shortTitle: "主视角",
+            side: "neutral",
             headimg: normalizeImageUrl(zone.headimg || zone.headImg || zone.logo || zone.icon),
             sources: normalizeSources(zone.zoneLiveString),
           });
@@ -248,6 +300,7 @@ function parseLiveInfo(payload) {
               zoneName,
               title: role,
               shortTitle: role,
+              side: detectStreamSide(role, item),
               headimg: normalizeImageUrl(item.headimg || item.headImg || item.avatar || item.icon),
               sources: normalizeSources(item.sources),
             });
@@ -259,6 +312,13 @@ function parseLiveInfo(payload) {
     : [];
 
   return { eventName: payload?.eventName || "赛事多视角监看系统", zones };
+}
+
+function detectStreamSide(role, item = {}) {
+  const text = `${role || ""} ${item.name || ""} ${item.team || ""} ${item.color || ""}`.toLowerCase();
+  if (/红|red/.test(text)) return "red";
+  if (/蓝|blue/.test(text)) return "blue";
+  return "neutral";
 }
 
 function normalizeImageUrl(value) {
@@ -381,6 +441,7 @@ function assignMainStream(streamId, slotIndex) {
 
 function render() {
   applyLayoutConfig(false);
+  refs.viewerLayout.dataset.clean = state.cleanMode ? "true" : "false";
   refs.eventTitle.textContent = state.eventName;
   renderZones();
   renderMeta();
@@ -492,9 +553,10 @@ function renderMainSlot(slot) {
 
 function renderMainCard(stream, slotIndex) {
   const source = pickSource(stream, "main");
+  const controls = state.cleanMode ? "" : " controls";
   return `
     <div class="video-frame main-frame" data-stream-id="${escapeAttr(stream.id)}" data-slot-index="${slotIndex}" data-player-key="${escapeAttr(mainKey(slotIndex, stream.id))}">
-      <video controls autoplay muted playsinline preload="auto" data-player-key="${escapeAttr(mainKey(slotIndex, stream.id))}"></video>
+      <video${controls} autoplay muted playsinline preload="auto" data-player-key="${escapeAttr(mainKey(slotIndex, stream.id))}"></video>
       <div class="video-overlay">
         <div class="stream-identity">
           ${renderAvatar(stream, "main")}
@@ -540,6 +602,7 @@ function updateMainCard(frame, stream, slotIndex, source) {
   if (quality) quality.textContent = source?.label || "--";
   const muteIcon = frame.querySelector("[data-action='toggle-mute'] i");
   if (muteIcon) muteIcon.setAttribute("data-lucide", state.mainMuted ? "volume-x" : "volume-2");
+  syncVideoControls(frame);
 }
 
 function renderThumbs() {
@@ -579,7 +642,7 @@ function syncThumbCards(streams) {
     refs.thumbGrid.appendChild(card);
 
     const video = card.querySelector(`video[data-player-key="${cssEscape(key)}"]`);
-    if (!video || !source || state.previewMode === "poster") {
+    if (!video || !source || (state.previewMode === "poster" && !state.cleanMode)) {
       destroyPlayer(key, state.thumbHls);
       return;
     }
@@ -617,7 +680,7 @@ function renderThumbCard(stream) {
 }
 
 function renderThumbMedia(stream) {
-  if (state.previewMode === "poster") {
+  if (state.previewMode === "poster" && !state.cleanMode) {
     return `
       <div class="thumb-poster">
         ${renderAvatar(stream, "poster")}
@@ -733,10 +796,27 @@ function getMainSlots() {
 function getThumbStreams() {
   const layout = getCurrentLayout();
   const streams = getFilteredStreams();
-  if (layout.mainCount === 0) return streams;
+  if (layout.mainCount === 0) return sortStreamsForFocus(streams);
 
   reconcileMainSlots();
-  return streams;
+  return sortStreamsForFocus(streams);
+}
+
+function sortStreamsForFocus(streams) {
+  if (state.focusSide === "all") return [...streams];
+  const preferredSide = state.focusSide;
+  return [...streams].sort((a, b) => {
+    const aScore = focusRank(a, preferredSide);
+    const bScore = focusRank(b, preferredSide);
+    if (aScore !== bScore) return aScore - bScore;
+    return 0;
+  });
+}
+
+function focusRank(stream, preferredSide) {
+  if (stream.side === preferredSide) return 0;
+  if (stream.side === "neutral") return 1;
+  return 2;
 }
 
 function getAssignedSlotIndexes(streamId) {
