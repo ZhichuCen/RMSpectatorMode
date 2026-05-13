@@ -21,6 +21,7 @@ const state = {
   eventName: "赛事多视角监看系统",
   selectedZoneId: "",
   selectedStreamId: "",
+  mainStreamIds: [],
   filter: "",
   lastUpdatedAt: null,
   mainHls: new Map(),
@@ -72,15 +73,19 @@ function bindEvents() {
   refs.zoneSelect.addEventListener("change", (event) => {
     state.selectedZoneId = event.target.value;
     state.selectedStreamId = "";
+    state.mainStreamIds = [];
+    reconcileMainSlots();
     render();
   });
   refs.viewFilter.addEventListener("input", (event) => {
     state.filter = event.target.value.trim().toLowerCase();
+    reconcileMainSlots();
     render();
   });
   refs.layoutSelect.addEventListener("change", (event) => {
     state.layout = event.target.value;
     applyLayoutConfig(true);
+    reconcileMainSlots();
     render();
   });
   refs.mainResolutionSelect.addEventListener("change", (event) => {
@@ -101,6 +106,18 @@ function bindEvents() {
         video.muted = state.mainMuted;
       });
       renderMainPlayers();
+    }
+  });
+  refs.thumbGrid.addEventListener("click", (event) => {
+    const assignButton = event.target.closest("[data-action='assign-main']");
+    if (assignButton) {
+      assignMainStream(assignButton.dataset.streamId || "", Number(assignButton.dataset.slotIndex || 0));
+      return;
+    }
+
+    const card = event.target.closest(".thumb-card");
+    if (card && getCurrentLayout().mainCount === 1) {
+      assignMainStream(card.dataset.streamId || "", 0);
     }
   });
 }
@@ -257,6 +274,7 @@ function reconcileSelection() {
   if (!state.zones.length) {
     state.selectedZoneId = "";
     state.selectedStreamId = "";
+    state.mainStreamIds = [];
     return;
   }
 
@@ -268,6 +286,49 @@ function reconcileSelection() {
   if (!zone?.streams.some((stream) => stream.id === state.selectedStreamId)) {
     state.selectedStreamId = zone?.streams.find((stream) => stream.kind === "main")?.id || zone?.streams[0]?.id || "";
   }
+  reconcileMainSlots();
+}
+
+function reconcileMainSlots() {
+  const layout = getCurrentLayout();
+  if (layout.mainCount === 0) {
+    state.mainStreamIds = [];
+    return;
+  }
+
+  const streams = getFilteredStreams();
+  const validIds = new Set(streams.map((stream) => stream.id));
+  const nextIds = state.mainStreamIds
+    .slice(0, layout.mainCount)
+    .map((streamId) => (validIds.has(streamId) ? streamId : ""));
+
+  for (const stream of streams) {
+    if (nextIds.length >= layout.mainCount && nextIds.every(Boolean)) break;
+    if (nextIds.includes(stream.id)) continue;
+
+    const emptyIndex = nextIds.findIndex((streamId) => !streamId);
+    if (emptyIndex >= 0) {
+      nextIds[emptyIndex] = stream.id;
+    } else if (nextIds.length < layout.mainCount) {
+      nextIds.push(stream.id);
+    }
+  }
+
+  state.mainStreamIds = Array.from({ length: layout.mainCount }, (_item, index) => nextIds[index] || "");
+  if (!state.selectedStreamId || !validIds.has(state.selectedStreamId)) {
+    state.selectedStreamId = state.mainStreamIds.find(Boolean) || streams[0]?.id || "";
+  }
+}
+
+function assignMainStream(streamId, slotIndex) {
+  const layout = getCurrentLayout();
+  if (!streamId || layout.mainCount === 0) return;
+
+  const boundedSlotIndex = Math.min(Math.max(slotIndex, 0), layout.mainCount - 1);
+  reconcileMainSlots();
+  state.mainStreamIds[boundedSlotIndex] = streamId;
+  state.selectedStreamId = streamId;
+  render();
 }
 
 function render() {
@@ -305,10 +366,12 @@ function renderMainPlayers() {
     return;
   }
 
-  const streams = getMainStreams();
-  destroyMissingMainPlayers(new Set(streams.map((stream) => mainKey(stream.id))));
+  reconcileMainSlots();
+  const slots = getMainSlots();
+  const populatedSlots = slots.filter((slot) => slot.stream);
+  destroyMissingMainPlayers(new Set(populatedSlots.map((slot) => mainKey(slot.slotIndex, slot.stream.id))));
 
-  if (!streams.length) {
+  if (!populatedSlots.length) {
     refs.mainGrid.innerHTML = "";
     refs.mainEmpty.hidden = false;
     refs.mainEmpty.querySelector("p").textContent = state.zones.length ? "没有符合条件的直播源。" : "等待直播源。";
@@ -316,24 +379,39 @@ function renderMainPlayers() {
   }
 
   refs.mainEmpty.hidden = true;
-  refs.mainGrid.innerHTML = streams.map(renderMainCard).join("");
-  streams.forEach((stream) => {
-    const source = pickSource(stream, "main");
-    const key = mainKey(stream.id);
+  refs.mainGrid.innerHTML = slots.map(renderMainSlot).join("");
+  populatedSlots.forEach((slot) => {
+    const source = pickSource(slot.stream, "main");
+    const key = mainKey(slot.slotIndex, slot.stream.id);
     const video = refs.mainGrid.querySelector(`video[data-player-key="${cssEscape(key)}"]`);
     if (video && source) attachHls(video, source.src, key, "main");
   });
 }
 
-function renderMainCard(stream) {
+function renderMainSlot(slot) {
+  if (!slot.stream) {
+    return `
+      <div class="video-frame main-frame main-placeholder" data-slot-index="${slot.slotIndex}">
+        <div class="main-placeholder-content">
+          <p>大屏 ${slot.slotIndex + 1}</p>
+          <span>从下方小视角添加</span>
+        </div>
+      </div>
+    `;
+  }
+
+  return renderMainCard(slot.stream, slot.slotIndex);
+}
+
+function renderMainCard(stream, slotIndex) {
   const source = pickSource(stream, "main");
   return `
-    <div class="video-frame main-frame" data-stream-id="${escapeAttr(stream.id)}">
-      <video controls autoplay muted playsinline preload="metadata" data-player-key="${escapeAttr(mainKey(stream.id))}"></video>
+    <div class="video-frame main-frame" data-stream-id="${escapeAttr(stream.id)}" data-slot-index="${slotIndex}">
+      <video controls autoplay muted playsinline preload="metadata" data-player-key="${escapeAttr(mainKey(slotIndex, stream.id))}"></video>
       <div class="video-overlay">
         <div>
           <p class="video-kicker">${escapeHtml(stream.zoneName)}</p>
-          <h2>${escapeHtml(stream.title)}</h2>
+          <h2><span>大屏 ${slotIndex + 1}</span>${escapeHtml(stream.title)}</h2>
         </div>
         <div class="overlay-actions">
           <span class="quality-badge">${escapeHtml(source?.label || "--")}</span>
@@ -356,12 +434,6 @@ function renderThumbs() {
 
   refs.emptyState.hidden = streams.length > 0;
   refs.thumbGrid.innerHTML = streams.map(renderThumbCard).join("");
-  refs.thumbGrid.querySelectorAll(".thumb-card").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.selectedStreamId = button.dataset.streamId || "";
-      render();
-    });
-  });
 
   streams.forEach((stream) => {
     const source = pickSource(stream, "thumb");
@@ -380,9 +452,10 @@ function renderThumbs() {
 
 function renderThumbCard(stream) {
   const source = pickSource(stream, "thumb");
-  const active = stream.id === state.selectedStreamId ? " active" : "";
+  const assignedSlots = getAssignedSlotIndexes(stream.id);
+  const active = assignedSlots.length ? " active" : "";
   return `
-    <button class="thumb-card${active}" type="button" data-stream-id="${escapeAttr(stream.id)}">
+    <article class="thumb-card${active}" data-stream-id="${escapeAttr(stream.id)}">
       <div class="video-frame thumb-video">
         <video muted autoplay playsinline preload="metadata" data-player-key="${escapeAttr(thumbKey(stream.id))}"></video>
       </div>
@@ -391,7 +464,37 @@ function renderThumbCard(stream) {
         <span>${escapeHtml(stream.kind === "main" ? "主视角" : "第一视角")}</span>
         <span>${escapeHtml(source?.label || "--")}</span>
       </span>
-    </button>
+      ${renderAssignControls(stream.id)}
+    </article>
+  `;
+}
+
+function renderAssignControls(streamId) {
+  const layout = getCurrentLayout();
+  if (layout.mainCount === 0) return "";
+
+  if (layout.mainCount === 1) {
+    return `
+      <button class="text-button assign-main-button" data-action="assign-main" data-stream-id="${escapeAttr(streamId)}" data-slot-index="0" type="button">
+        添加到大屏
+      </button>
+    `;
+  }
+
+  const buttons = Array.from({ length: layout.mainCount }, (_item, index) => {
+    const active = state.mainStreamIds[index] === streamId ? " active" : "";
+    return `
+      <button class="slot-button${active}" data-action="assign-main" data-stream-id="${escapeAttr(streamId)}" data-slot-index="${index}" type="button" aria-label="添加到大屏 ${index + 1}">
+        ${index + 1}
+      </button>
+    `;
+  }).join("");
+
+  return `
+    <div class="assign-controls" aria-label="添加到大屏">
+      <span>添加到</span>
+      <div class="slot-button-group">${buttons}</div>
+    </div>
   `;
 }
 
@@ -412,19 +515,15 @@ function getFilteredStreams() {
   });
 }
 
-function getMainStreams() {
+function getMainSlots() {
   const layout = getCurrentLayout();
   if (layout.mainCount === 0) return [];
 
-  const streams = getFilteredStreams();
-  if (!streams.length) return [];
-
-  let selectedIndex = streams.findIndex((stream) => stream.id === state.selectedStreamId);
-  if (selectedIndex < 0) selectedIndex = 0;
-  state.selectedStreamId = streams[selectedIndex].id;
-
-  const start = Math.min(selectedIndex, Math.max(0, streams.length - layout.mainCount));
-  return streams.slice(start, start + layout.mainCount);
+  const streamsById = new Map(getFilteredStreams().map((stream) => [stream.id, stream]));
+  return Array.from({ length: layout.mainCount }, (_item, slotIndex) => ({
+    slotIndex,
+    stream: streamsById.get(state.mainStreamIds[slotIndex]) || null,
+  }));
 }
 
 function getThumbStreams() {
@@ -432,8 +531,14 @@ function getThumbStreams() {
   const streams = getFilteredStreams();
   if (layout.mainCount === 0) return streams;
 
-  const mainIds = new Set(getMainStreams().map((stream) => stream.id));
-  return streams.filter((stream) => !mainIds.has(stream.id));
+  reconcileMainSlots();
+  return streams;
+}
+
+function getAssignedSlotIndexes(streamId) {
+  return state.mainStreamIds
+    .map((assignedStreamId, index) => (assignedStreamId === streamId ? index : -1))
+    .filter((index) => index >= 0);
 }
 
 function attachHls(video, src, key, group) {
@@ -519,7 +624,7 @@ function escapeHtml(value) {
 }
 
 const escapeAttr = escapeHtml;
-const mainKey = (streamId) => `main:${streamId}`;
+const mainKey = (slotIndex, streamId) => `main:${slotIndex}:${streamId}`;
 const thumbKey = (streamId) => `thumb:${streamId}`;
 const cssEscape = (value) => (window.CSS?.escape ? window.CSS.escape(value) : String(value).replace(/["\\]/g, "\\$&"));
 
