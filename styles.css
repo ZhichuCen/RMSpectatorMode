@@ -249,6 +249,31 @@ h1 {
   min-height: 42px;
 }
 
+.clean-exit-button {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  z-index: 50;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 38px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  padding: 0 12px;
+  background: rgba(0, 0, 0, 0.68);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 800;
+  backdrop-filter: blur(12px);
+}
+
+.clean-exit-button svg {
+  width: 16px;
+  height: 16px;
+}
+
 .field {
   display: grid;
   gap: 7px;
@@ -710,8 +735,14 @@ body.clean-mode {
 .clean-mode .thumb-identity,
 .clean-mode .thumb-meta,
 .clean-mode .assign-main-button,
-.clean-mode .assign-controls {
+.clean-mode .assign-controls,
+.clean-mode .main-placeholder,
+.clean-mode .empty-state {
   display: none;
+}
+
+.clean-mode .clean-exit-button {
+  display: inline-flex;
 }
 
 .clean-mode .app-shell {
@@ -721,6 +752,7 @@ body.clean-mode {
 }
 
 .clean-mode .viewer-layout {
+  display: grid;
   height: 100vh;
   margin: 0;
   gap: 0;
@@ -742,6 +774,7 @@ body.clean-mode {
 
 .clean-mode .main-view,
 .clean-mode .side-panel {
+  display: block;
   min-height: 0;
   height: 100%;
   max-height: none;
@@ -753,6 +786,7 @@ body.clean-mode {
 
 .clean-mode .main-grid,
 .clean-mode .thumb-grid {
+  display: grid;
   height: 100%;
   gap: 0;
   padding: 0;
@@ -772,28 +806,30 @@ body.clean-mode {
 }
 
 .clean-mode .thumb-card {
-  display: block;
+  display: grid;
   padding: 0;
   transform: none;
 }
 
 .clean-mode .thumb-grid {
+  grid-auto-flow: row;
   grid-auto-rows: minmax(0, 1fr);
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(var(--clean-thumb-cols, 4), minmax(0, 1fr));
+  grid-template-rows: repeat(var(--clean-thumb-rows, 4), minmax(0, 1fr));
 }
 
 .clean-mode .viewer-layout[data-layout="one-plus"] .thumb-grid {
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(var(--clean-thumb-cols, 1), minmax(0, 1fr));
 }
 
 .clean-mode .viewer-layout[data-layout="two-main"] .thumb-grid,
 .clean-mode .viewer-layout[data-layout="four-main"] .thumb-grid,
 .clean-mode .viewer-layout[data-layout="grid-4x4"] .thumb-grid {
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(var(--clean-thumb-cols, 4), minmax(0, 1fr));
 }
 
 .clean-mode video {
-  object-fit: contain;
+  object-fit: cover;
 }
 
 @media (max-width: 1080px) {

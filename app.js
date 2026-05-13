@@ -67,6 +67,7 @@ function bindRefs() {
     "previewModeSelect",
     "focusSideSelect",
     "cleanModeButton",
+    "cleanExitButton",
     "viewerLayout",
     "mainGrid",
     "mainEmpty",
@@ -119,6 +120,9 @@ function bindEvents() {
   });
   refs.cleanModeButton.addEventListener("click", () => {
     setCleanMode(!state.cleanMode);
+  });
+  refs.cleanExitButton.addEventListener("click", () => {
+    setCleanMode(false);
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && state.cleanMode) {
@@ -222,6 +226,7 @@ function setCleanMode(enabled) {
   refs.cleanModeButton.setAttribute("aria-pressed", String(state.cleanMode));
   refs.cleanModeButton.classList.toggle("active", state.cleanMode);
   refs.cleanModeButton.querySelector("span").textContent = state.cleanMode ? "退出纯净" : "纯净";
+  refs.cleanExitButton.hidden = !state.cleanMode;
   const icon = refs.cleanModeButton.querySelector("i");
   if (icon) icon.setAttribute("data-lucide", state.cleanMode ? "monitor-x" : "monitor-up");
   refs.viewerLayout.dataset.clean = state.cleanMode ? "true" : "false";
@@ -607,6 +612,7 @@ function updateMainCard(frame, stream, slotIndex, source) {
 
 function renderThumbs() {
   const streams = getThumbStreams();
+  syncCleanGridMetrics(streams.length);
   destroyMissingThumbPlayers(new Set(streams.map((stream) => thumbKey(stream.id))));
 
   refs.emptyState.hidden = streams.length > 0;
@@ -618,6 +624,17 @@ function renderThumbs() {
       ? "没有符合筛选条件的其他视角。"
       : "当前赛区还没有可用直播源。";
   }
+}
+
+function syncCleanGridMetrics(thumbCount) {
+  const layout = getCurrentLayout();
+  const count = Math.max(thumbCount, 1);
+  const cols = layout.id === "one-plus"
+    ? Math.min(count, count > 8 ? 2 : 1)
+    : Math.max(1, Math.ceil(Math.sqrt(count * 16 / 9)));
+  const rows = Math.max(1, Math.ceil(count / cols));
+  refs.thumbGrid.style.setProperty("--clean-thumb-cols", String(cols));
+  refs.thumbGrid.style.setProperty("--clean-thumb-rows", String(rows));
 }
 
 function syncThumbCards(streams) {
@@ -648,7 +665,7 @@ function syncThumbCards(streams) {
     }
 
     video.dataset.playerSrc = source.src;
-    if (state.previewMode === "smart") {
+    if (state.previewMode === "smart" && !state.cleanMode) {
       observeThumbVideo(video);
     } else {
       unobserveThumbVideo(video);
