@@ -829,7 +829,7 @@ body.clean-mode {
 }
 
 .clean-mode video {
-  object-fit: cover;
+  object-fit: contain;
 }
 
 @media (max-width: 1080px) {
