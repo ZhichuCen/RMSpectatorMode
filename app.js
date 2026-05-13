@@ -13,7 +13,11 @@ const RESOLUTION_OPTIONS = [
   { id: "middle", label: "720p" },
   { id: "low", label: "540p" },
 ];
-
+const PREVIEW_MODES = [
+  { id: "live", label: "实时预览" },
+  { id: "smart", label: "智能省流" },
+  { id: "poster", label: "头像占位" },
+];
 const state = {
   zones: [],
   eventName: "赛事多视角监看系统",
@@ -28,6 +32,8 @@ const state = {
   isLoading: false,
   layout: "one-plus",
   mainResolution: "high",
+  previewMode: "smart",
+  thumbObserver: null,
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -35,6 +41,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindEvents();
   renderLayoutOptions();
   renderResolutionOptions();
+  renderPreviewModeOptions();
   applyLayoutConfig(false);
   renderIcons();
   loadFeed();
@@ -49,6 +56,7 @@ function bindRefs() {
     "viewFilter",
     "layoutSelect",
     "mainResolutionSelect",
+    "previewModeSelect",
     "viewerLayout",
     "mainGrid",
     "mainEmpty",
@@ -87,6 +95,12 @@ function bindEvents() {
   refs.mainResolutionSelect.addEventListener("change", (event) => {
     state.mainResolution = event.target.value;
     renderMainPlayers();
+    renderIcons();
+  });
+  refs.previewModeSelect.addEventListener("change", (event) => {
+    state.previewMode = event.target.value;
+    renderThumbs();
+    renderIcons();
   });
   refs.mainGrid.addEventListener("click", (event) => {
     const retryButton = event.target.closest("[data-action='retry-main']");
@@ -102,6 +116,21 @@ function bindEvents() {
         video.muted = state.mainMuted;
       });
       renderMainPlayers();
+      renderIcons();
+      return;
+    }
+
+    const pipButton = event.target.closest("[data-action='toggle-pip']");
+    if (pipButton) {
+      const video = pipButton.closest(".video-frame")?.querySelector("video");
+      togglePictureInPicture(video);
+      return;
+    }
+
+    const fullscreenButton = event.target.closest("[data-action='toggle-fullscreen']");
+    if (fullscreenButton) {
+      const frame = fullscreenButton.closest(".video-frame");
+      toggleFullscreen(frame);
     }
   });
   refs.thumbGrid.addEventListener("click", (event) => {
@@ -132,6 +161,13 @@ function renderResolutionOptions() {
   refs.mainResolutionSelect.value = state.mainResolution;
 }
 
+function renderPreviewModeOptions() {
+  refs.previewModeSelect.innerHTML = PREVIEW_MODES.map(
+    (item) => `<option value="${item.id}">${item.label}</option>`,
+  ).join("");
+  refs.previewModeSelect.value = state.previewMode;
+}
+
 function applyLayoutConfig(resetResolution) {
   const layout = getCurrentLayout();
   if (resetResolution) {
@@ -140,8 +176,13 @@ function applyLayoutConfig(resetResolution) {
   refs.viewerLayout.dataset.layout = layout.id;
   refs.mainResolutionSelect.value = state.mainResolution;
   refs.mainResolutionSelect.disabled = layout.mainCount === 0;
+  refs.previewModeSelect.value = state.previewMode;
   refs.smallPanelTitle.textContent = layout.mainCount === 0 ? "全部视角" : "可切换视角";
-  refs.smallPanelHint.textContent = layout.mainCount === 0 ? "4x4 低清预览" : "小窗优先低清";
+  refs.smallPanelHint.textContent = state.previewMode === "poster"
+    ? "停止小窗拉流"
+    : layout.mainCount === 0
+      ? "4x4 低清预览"
+      : "可见小窗低清拉流";
 }
 
 async function loadFeed() {
@@ -192,6 +233,7 @@ function parseLiveInfo(payload) {
             zoneName,
             title: `${zoneName} 主视角`,
             shortTitle: "主视角",
+            headimg: normalizeImageUrl(zone.headimg || zone.headImg || zone.logo || zone.icon),
             sources: normalizeSources(zone.zoneLiveString),
           });
         }
@@ -206,6 +248,7 @@ function parseLiveInfo(payload) {
               zoneName,
               title: role,
               shortTitle: role,
+              headimg: normalizeImageUrl(item.headimg || item.headImg || item.avatar || item.icon),
               sources: normalizeSources(item.sources),
             });
           });
@@ -216,6 +259,14 @@ function parseLiveInfo(payload) {
     : [];
 
   return { eventName: payload?.eventName || "赛事多视角监看系统", zones };
+}
+
+function normalizeImageUrl(value) {
+  if (!value) return "";
+  const url = String(value).trim();
+  if (!url) return "";
+  if (url.startsWith("//")) return `https:${url}`;
+  return url;
 }
 
 function normalizeSources(sources = []) {
@@ -323,7 +374,9 @@ function assignMainStream(streamId, slotIndex) {
   reconcileMainSlots();
   state.mainStreamIds[boundedSlotIndex] = streamId;
   state.selectedStreamId = streamId;
-  render();
+  renderMainPlayers();
+  renderThumbs();
+  renderIcons();
 }
 
 function render() {
@@ -364,7 +417,8 @@ function renderMainPlayers() {
   reconcileMainSlots();
   const slots = getMainSlots();
   const populatedSlots = slots.filter((slot) => slot.stream);
-  destroyMissingMainPlayers(new Set(populatedSlots.map((slot) => mainKey(slot.slotIndex, slot.stream.id))));
+  const desiredKeys = new Set(populatedSlots.map((slot) => mainKey(slot.slotIndex, slot.stream.id)));
+  destroyMissingMainPlayers(desiredKeys);
 
   if (!populatedSlots.length) {
     refs.mainGrid.innerHTML = "";
@@ -374,13 +428,51 @@ function renderMainPlayers() {
   }
 
   refs.mainEmpty.hidden = true;
-  refs.mainGrid.innerHTML = slots.map(renderMainSlot).join("");
-  populatedSlots.forEach((slot) => {
+  syncMainSlots(slots);
+}
+
+function syncMainSlots(slots) {
+  const validSlotIndexes = new Set(slots.map((slot) => String(slot.slotIndex)));
+  refs.mainGrid.querySelectorAll(".main-frame").forEach((frame) => {
+    if (!validSlotIndexes.has(frame.dataset.slotIndex || "")) {
+      destroyPlayerForFrame(frame, state.mainHls);
+      frame.remove();
+    }
+  });
+
+  slots.forEach((slot) => {
+    const existing = refs.mainGrid.querySelector(`.main-frame[data-slot-index="${slot.slotIndex}"]`);
+    if (!slot.stream) {
+      const placeholder = elementFromHtml(renderMainSlot(slot));
+      if (existing) {
+        destroyPlayerForFrame(existing, state.mainHls);
+        existing.replaceWith(placeholder);
+      } else {
+        refs.mainGrid.appendChild(placeholder);
+      }
+      return;
+    }
+
     const source = pickSource(slot.stream, "main");
     const key = mainKey(slot.slotIndex, slot.stream.id);
-    const video = refs.mainGrid.querySelector(`video[data-player-key="${cssEscape(key)}"]`);
+    let frame = existing;
+    if (!frame || frame.dataset.playerKey !== key) {
+      const nextFrame = elementFromHtml(renderMainCard(slot.stream, slot.slotIndex));
+      if (frame) {
+        destroyPlayerForFrame(frame, state.mainHls);
+        frame.replaceWith(nextFrame);
+      } else {
+        refs.mainGrid.appendChild(nextFrame);
+      }
+      frame = nextFrame;
+    } else {
+      updateMainCard(frame, slot.stream, slot.slotIndex, source);
+    }
+
+    const video = frame.querySelector(`video[data-player-key="${cssEscape(key)}"]`);
     if (video && source) attachHls(video, source.src, key, "main");
   });
+
 }
 
 function renderMainSlot(slot) {
@@ -401,15 +493,24 @@ function renderMainSlot(slot) {
 function renderMainCard(stream, slotIndex) {
   const source = pickSource(stream, "main");
   return `
-    <div class="video-frame main-frame" data-stream-id="${escapeAttr(stream.id)}" data-slot-index="${slotIndex}">
-      <video controls autoplay muted playsinline preload="metadata" data-player-key="${escapeAttr(mainKey(slotIndex, stream.id))}"></video>
+    <div class="video-frame main-frame" data-stream-id="${escapeAttr(stream.id)}" data-slot-index="${slotIndex}" data-player-key="${escapeAttr(mainKey(slotIndex, stream.id))}">
+      <video controls autoplay muted playsinline preload="auto" data-player-key="${escapeAttr(mainKey(slotIndex, stream.id))}"></video>
       <div class="video-overlay">
-        <div>
-          <p class="video-kicker">${escapeHtml(stream.zoneName)}</p>
-          <h2><span>大屏 ${slotIndex + 1}</span>${escapeHtml(stream.title)}</h2>
+        <div class="stream-identity">
+          ${renderAvatar(stream, "main")}
+          <div>
+            <p class="video-kicker">${escapeHtml(stream.zoneName)}</p>
+            <h2><span>大屏 ${slotIndex + 1}</span>${escapeHtml(stream.title)}</h2>
+          </div>
         </div>
         <div class="overlay-actions">
           <span class="quality-badge">${escapeHtml(source?.label || "--")}</span>
+          <button class="icon-button" data-action="toggle-pip" type="button" aria-label="画中画" title="画中画">
+            <i data-lucide="picture-in-picture-2" aria-hidden="true"></i>
+          </button>
+          <button class="icon-button" data-action="toggle-fullscreen" type="button" aria-label="全屏" title="全屏">
+            <i data-lucide="maximize" aria-hidden="true"></i>
+          </button>
           <button class="icon-button" data-action="toggle-mute" type="button" aria-label="切换静音">
             <i data-lucide="${state.mainMuted ? "volume-x" : "volume-2"}" aria-hidden="true"></i>
           </button>
@@ -423,19 +524,30 @@ function renderMainCard(stream, slotIndex) {
   `;
 }
 
+function updateMainCard(frame, stream, slotIndex, source) {
+  frame.dataset.streamId = stream.id;
+  const identity = frame.querySelector(".stream-identity");
+  if (identity) {
+    identity.innerHTML = `
+      ${renderAvatar(stream, "main")}
+      <div>
+        <p class="video-kicker">${escapeHtml(stream.zoneName)}</p>
+        <h2><span>大屏 ${slotIndex + 1}</span>${escapeHtml(stream.title)}</h2>
+      </div>
+    `;
+  }
+  const quality = frame.querySelector(".quality-badge");
+  if (quality) quality.textContent = source?.label || "--";
+  const muteIcon = frame.querySelector("[data-action='toggle-mute'] i");
+  if (muteIcon) muteIcon.setAttribute("data-lucide", state.mainMuted ? "volume-x" : "volume-2");
+}
+
 function renderThumbs() {
   const streams = getThumbStreams();
   destroyMissingThumbPlayers(new Set(streams.map((stream) => thumbKey(stream.id))));
 
   refs.emptyState.hidden = streams.length > 0;
-  refs.thumbGrid.innerHTML = streams.map(renderThumbCard).join("");
-
-  streams.forEach((stream) => {
-    const source = pickSource(stream, "thumb");
-    const key = thumbKey(stream.id);
-    const video = refs.thumbGrid.querySelector(`video[data-player-key="${cssEscape(key)}"]`);
-    if (video && source) attachHls(video, source.src, key, "thumb");
-  });
+  syncThumbCards(streams);
 
   if (!streams.length) {
     const zone = getSelectedZone();
@@ -445,22 +557,119 @@ function renderThumbs() {
   }
 }
 
+function syncThumbCards(streams) {
+  const allowedKeys = new Set(streams.map((stream) => thumbKey(stream.id)));
+  refs.thumbGrid.querySelectorAll(".thumb-card").forEach((card) => {
+    const key = card.dataset.playerKey || "";
+    if (!allowedKeys.has(key)) {
+      destroyPlayerForFrame(card, state.thumbHls);
+      card.remove();
+    }
+  });
+
+  streams.forEach((stream) => {
+    const key = thumbKey(stream.id);
+    const source = pickSource(stream, "thumb");
+    let card = refs.thumbGrid.querySelector(`.thumb-card[data-player-key="${cssEscape(key)}"]`);
+    if (!card) {
+      card = elementFromHtml(renderThumbCard(stream));
+    } else {
+      updateThumbCard(card, stream, source);
+    }
+    refs.thumbGrid.appendChild(card);
+
+    const video = card.querySelector(`video[data-player-key="${cssEscape(key)}"]`);
+    if (!video || !source || state.previewMode === "poster") {
+      destroyPlayer(key, state.thumbHls);
+      return;
+    }
+
+    video.dataset.playerSrc = source.src;
+    if (state.previewMode === "smart") {
+      observeThumbVideo(video);
+    } else {
+      unobserveThumbVideo(video);
+      attachHls(video, source.src, key, "thumb");
+    }
+  });
+}
+
 function renderThumbCard(stream) {
   const source = pickSource(stream, "thumb");
   const assignedSlots = getAssignedSlotIndexes(stream.id);
   const active = assignedSlots.length ? " active" : "";
   return `
-    <article class="thumb-card${active}" data-stream-id="${escapeAttr(stream.id)}">
+    <article class="thumb-card${active}" data-stream-id="${escapeAttr(stream.id)}" data-player-key="${escapeAttr(thumbKey(stream.id))}">
       <div class="video-frame thumb-video">
-        <video muted autoplay playsinline preload="metadata" data-player-key="${escapeAttr(thumbKey(stream.id))}"></video>
+        ${renderThumbMedia(stream)}
       </div>
-      <span class="thumb-title">${escapeHtml(stream.shortTitle)}</span>
+      <div class="thumb-identity">
+        ${renderAvatar(stream, "thumb")}
+        <span class="thumb-title">${escapeHtml(stream.shortTitle)}</span>
+      </div>
       <span class="thumb-meta">
         <span>${escapeHtml(stream.kind === "main" ? "主视角" : "第一视角")}</span>
         <span>${escapeHtml(source?.label || "--")}</span>
       </span>
       ${renderAssignControls(stream.id)}
     </article>
+  `;
+}
+
+function renderThumbMedia(stream) {
+  if (state.previewMode === "poster") {
+    return `
+      <div class="thumb-poster">
+        ${renderAvatar(stream, "poster")}
+      </div>
+    `;
+  }
+
+  return `<video muted autoplay playsinline preload="none" data-player-key="${escapeAttr(thumbKey(stream.id))}"></video>`;
+}
+
+function updateThumbCard(card, stream, source) {
+  const assignedSlots = getAssignedSlotIndexes(stream.id);
+  card.classList.toggle("active", assignedSlots.length > 0);
+  const media = card.querySelector(".thumb-video");
+  if (media) {
+    const wantsPoster = state.previewMode === "poster";
+    const hasPoster = Boolean(media.querySelector(".thumb-poster"));
+    if (wantsPoster !== hasPoster) {
+      destroyPlayer(thumbKey(stream.id), state.thumbHls);
+      media.innerHTML = renderThumbMedia(stream);
+    }
+  }
+  const identity = card.querySelector(".thumb-identity");
+  if (identity) {
+    identity.innerHTML = `${renderAvatar(stream, "thumb")}<span class="thumb-title">${escapeHtml(stream.shortTitle)}</span>`;
+  }
+  const meta = card.querySelector(".thumb-meta");
+  if (meta) {
+    meta.innerHTML = `
+      <span>${escapeHtml(stream.kind === "main" ? "主视角" : "第一视角")}</span>
+      <span>${escapeHtml(source?.label || "--")}</span>
+    `;
+  }
+  const controls = card.querySelector(".assign-controls, .assign-main-button");
+  const nextControls = elementFromHtml(`<div>${renderAssignControls(stream.id)}</div>`);
+  if (controls) {
+    controls.replaceWith(...nextControls.childNodes);
+  } else {
+    card.append(...nextControls.childNodes);
+  }
+}
+
+function renderAvatar(stream, size) {
+  const initials = stream.shortTitle?.slice(0, 2) || "RM";
+  const image = stream.headimg
+    ? `<img src="${escapeAttr(stream.headimg)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.hidden=true">`
+    : "";
+  return `
+    <span class="stream-avatar stream-avatar-${size}" aria-hidden="true">
+      ${image}
+      <span>${escapeHtml(initials)}</span>
+    </span>
   `;
 }
 
@@ -540,17 +749,32 @@ function attachHls(video, src, key, group) {
   if (!video || !src) return;
   const store = group === "main" ? state.mainHls : state.thumbHls;
   const previous = store.get(key);
-  if (previous) previous.destroy();
+  if (previous?.src === src && video.dataset.attachedSrc === src) {
+    video.muted = group === "main" ? state.mainMuted : true;
+    video.play().catch(() => {});
+    return;
+  }
+  if (previous?.src && video.dataset.attachedSrc && playbackResourceKey(previous.src) === playbackResourceKey(src)) {
+    previous.src = src;
+    video.muted = group === "main" ? state.mainMuted : true;
+    hideVideoError(video);
+    video.play().catch(() => {});
+    return;
+  }
+
+  destroyPlayer(key, store);
 
   video.pause();
   video.removeAttribute("src");
   video.load();
   video.muted = group === "main" ? state.mainMuted : true;
+  video.dataset.attachedSrc = src;
+  hideVideoError(video);
 
   if (video.canPlayType("application/vnd.apple.mpegurl")) {
     video.src = src;
     video.play().catch(() => {});
-    store.delete(key);
+    store.set(key, { hls: null, src });
     return;
   }
 
@@ -575,12 +799,17 @@ function attachHls(video, src, key, group) {
   hls.loadSource(src);
   hls.attachMedia(video);
   hls.on(window.Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
-  store.set(key, hls);
+  store.set(key, { hls, src });
 }
 
 function showVideoError(video) {
   const error = video.closest(".video-frame")?.querySelector(".video-error");
   if (error) error.hidden = false;
+}
+
+function hideVideoError(video) {
+  const error = video.closest(".video-frame")?.querySelector(".video-error");
+  if (error) error.hidden = true;
 }
 
 function destroyMissingMainPlayers(allowedKeys) {
@@ -592,17 +821,105 @@ function destroyMissingThumbPlayers(allowedKeys) {
 }
 
 function destroyMissingPlayers(store, allowedKeys) {
-  for (const [key, hls] of store.entries()) {
+  for (const [key] of store.entries()) {
     if (!allowedKeys.has(key)) {
-      hls.destroy();
-      store.delete(key);
+      destroyPlayer(key, store);
     }
+  }
+}
+
+function destroyPlayerForFrame(frame, store) {
+  frame?.querySelectorAll?.("video").forEach(unobserveThumbVideo);
+  const key = frame?.dataset?.playerKey || frame?.querySelector?.("video")?.dataset?.playerKey;
+  if (key) destroyPlayer(key, store);
+}
+
+function destroyPlayer(key, store) {
+  const player = store.get(key);
+  if (player?.hls) player.hls.destroy();
+  store.delete(key);
+}
+
+function playbackResourceKey(src) {
+  try {
+    const url = new URL(src, window.location.href);
+    ["auth_key", "txSecret", "txTime", "sign", "expires"].forEach((param) => url.searchParams.delete(param));
+    return `${url.origin}${url.pathname}?${url.searchParams.toString()}`;
+  } catch (_error) {
+    return String(src).replace(/([?&](auth_key|txSecret|txTime|sign|expires)=)[^&]+/g, "$1");
+  }
+}
+
+function observeThumbVideo(video) {
+  if (!("IntersectionObserver" in window)) {
+    attachHls(video, video.dataset.playerSrc, video.dataset.playerKey, "thumb");
+    return;
+  }
+
+  if (!state.thumbObserver) {
+    state.thumbObserver = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        const target = entry.target;
+        const key = target.dataset.playerKey;
+        const src = target.dataset.playerSrc;
+        if (entry.isIntersecting) {
+          attachHls(target, src, key, "thumb");
+        } else if (key) {
+          destroyPlayer(key, state.thumbHls);
+          target.pause();
+          target.removeAttribute("src");
+          target.removeAttribute("data-attached-src");
+          target.load();
+        }
+      });
+    }, { root: refs.thumbGrid, rootMargin: "240px" });
+  }
+
+  state.thumbObserver.observe(video);
+}
+
+function unobserveThumbVideo(video) {
+  if (state.thumbObserver) state.thumbObserver.unobserve(video);
+}
+
+async function togglePictureInPicture(video) {
+  if (!video || !document.pictureInPictureEnabled || video.disablePictureInPicture) return;
+  try {
+    if (document.pictureInPictureElement === video) {
+      await document.exitPictureInPicture();
+    } else {
+      await video.requestPictureInPicture();
+    }
+  } catch (error) {
+    console.warn("Picture-in-picture failed", error);
+  }
+}
+
+async function toggleFullscreen(frame) {
+  if (!frame) return;
+  try {
+    if (document.fullscreenElement) {
+      await document.exitFullscreen();
+    } else if (frame.requestFullscreen) {
+      await frame.requestFullscreen();
+    } else {
+      const video = frame.querySelector("video");
+      video?.webkitEnterFullscreen?.();
+    }
+  } catch (error) {
+    console.warn("Fullscreen failed", error);
   }
 }
 
 function setFeedStatus(kind, message) {
   refs.feedStatus.className = `status-pill ${kind}`;
   refs.feedStatus.innerHTML = `<span class="status-dot"></span><span>${escapeHtml(message)}</span>`;
+}
+
+function elementFromHtml(html) {
+  const template = document.createElement("template");
+  template.innerHTML = html.trim();
+  return template.content.firstElementChild;
 }
 
 function renderIcons() {
