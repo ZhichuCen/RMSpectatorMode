@@ -1,6 +1,4 @@
 const FEED_URL = "https://rm-static.djicdn.com/live_json/live_game_info.json";
-const REFRESH_INTERVAL_MS = 15000;
-
 const refs = {};
 const LAYOUTS = [
   { id: "one-plus", label: "1 大 + 右侧 N 小", mainCount: 1, defaultRes: "high" },
@@ -25,7 +23,6 @@ const state = {
   lastUpdatedAt: null,
   mainHls: new Map(),
   thumbHls: new Map(),
-  refreshTimer: null,
   mainMuted: true,
   isLoading: false,
   layout: "one-plus",
@@ -40,7 +37,6 @@ document.addEventListener("DOMContentLoaded", () => {
   applyLayoutConfig(false);
   renderIcons();
   loadFeed();
-  state.refreshTimer = window.setInterval(loadFeed, REFRESH_INTERVAL_MS);
 });
 
 function bindRefs() {
@@ -137,8 +133,7 @@ async function loadFeed() {
   setFeedStatus("warn", "正在更新");
 
   try {
-    const response = await fetch(`${FEED_URL}?_=${Date.now()}`, {
-      cache: "no-store",
+    const response = await fetch(FEED_URL, {
       referrerPolicy: "no-referrer",
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
