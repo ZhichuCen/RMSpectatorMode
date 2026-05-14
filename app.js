@@ -33,7 +33,7 @@ const state = {
   lastUpdatedAt: null,
   mainHls: new Map(),
   thumbHls: new Map(),
-  mainMuted: true,
+  mainMutedBySlot: [],
   isLoading: false,
   layout: "one-plus",
   mainResolution: "high",
@@ -138,11 +138,18 @@ function bindEvents() {
 
     const muteButton = event.target.closest("[data-action='toggle-mute']");
     if (muteButton) {
-      state.mainMuted = !state.mainMuted;
-      refs.mainGrid.querySelectorAll("video").forEach((video) => {
-        video.muted = state.mainMuted;
-      });
-      renderMainPlayers();
+      const frame = muteButton.closest(".main-frame");
+      const slotIndex = getFrameSlotIndex(frame);
+      if (slotIndex < 0) return;
+
+      const muted = !isMainSlotMuted(slotIndex);
+      setMainSlotMuted(slotIndex, muted);
+      const video = frame.querySelector("video");
+      if (video) {
+        video.muted = muted;
+        if (!muted) video.play().catch(() => {});
+      }
+      syncMuteButton(muteButton, muted);
       renderIcons();
       return;
     }
@@ -404,6 +411,7 @@ function reconcileMainSlots() {
   const layout = getCurrentLayout();
   if (layout.mainCount === 0) {
     state.mainStreamIds = [];
+    state.mainMutedBySlot = [];
     return;
   }
 
@@ -426,6 +434,10 @@ function reconcileMainSlots() {
   }
 
   state.mainStreamIds = Array.from({ length: layout.mainCount }, (_item, index) => nextIds[index] || "");
+  state.mainMutedBySlot = Array.from(
+    { length: layout.mainCount },
+    (_item, index) => state.mainMutedBySlot[index] !== false,
+  );
   if (!state.selectedStreamId || !validIds.has(state.selectedStreamId)) {
     state.selectedStreamId = state.mainStreamIds.find(Boolean) || streams[0]?.id || "";
   }
@@ -559,9 +571,11 @@ function renderMainSlot(slot) {
 function renderMainCard(stream, slotIndex) {
   const source = pickSource(stream, "main");
   const controls = state.cleanMode ? "" : " controls";
+  const muted = isMainSlotMuted(slotIndex);
+  const mutedAttr = muted ? " muted" : "";
   return `
     <div class="video-frame main-frame" data-stream-id="${escapeAttr(stream.id)}" data-slot-index="${slotIndex}" data-player-key="${escapeAttr(mainKey(slotIndex, stream.id))}">
-      <video${controls} autoplay muted playsinline preload="auto" data-player-key="${escapeAttr(mainKey(slotIndex, stream.id))}"></video>
+      <video${controls}${mutedAttr} autoplay playsinline preload="auto" data-player-key="${escapeAttr(mainKey(slotIndex, stream.id))}"></video>
       <div class="video-overlay">
         <div class="stream-identity">
           ${renderAvatar(stream, "main")}
@@ -578,8 +592,8 @@ function renderMainCard(stream, slotIndex) {
           <button class="icon-button" data-action="toggle-fullscreen" type="button" aria-label="全屏" title="全屏">
             <i data-lucide="maximize" aria-hidden="true"></i>
           </button>
-          <button class="icon-button" data-action="toggle-mute" type="button" aria-label="切换静音">
-            <i data-lucide="${state.mainMuted ? "volume-x" : "volume-2"}" aria-hidden="true"></i>
+          <button class="icon-button" data-action="toggle-mute" type="button" aria-label="${muted ? "取消静音" : "静音"}" title="${muted ? "取消静音" : "静音"}" aria-pressed="${muted}">
+            <i data-lucide="${muted ? "volume-x" : "volume-2"}" aria-hidden="true"></i>
           </button>
         </div>
       </div>
@@ -605,8 +619,8 @@ function updateMainCard(frame, stream, slotIndex, source) {
   }
   const quality = frame.querySelector(".quality-badge");
   if (quality) quality.textContent = source?.label || "--";
-  const muteIcon = frame.querySelector("[data-action='toggle-mute'] i");
-  if (muteIcon) muteIcon.setAttribute("data-lucide", state.mainMuted ? "volume-x" : "volume-2");
+  const muteButton = frame.querySelector("[data-action='toggle-mute']");
+  if (muteButton) syncMuteButton(muteButton, isMainSlotMuted(slotIndex));
   syncVideoControls(frame);
 }
 
@@ -842,18 +856,43 @@ function getAssignedSlotIndexes(streamId) {
     .filter((index) => index >= 0);
 }
 
+function getFrameSlotIndex(frame) {
+  const slotIndex = Number(frame?.dataset?.slotIndex);
+  return Number.isInteger(slotIndex) ? slotIndex : -1;
+}
+
+function isMainSlotMuted(slotIndex) {
+  return state.mainMutedBySlot[slotIndex] !== false;
+}
+
+function setMainSlotMuted(slotIndex, muted) {
+  state.mainMutedBySlot[slotIndex] = Boolean(muted);
+}
+
+function getVideoMuted(video, group) {
+  if (group !== "main") return true;
+  return isMainSlotMuted(getFrameSlotIndex(video.closest(".main-frame")));
+}
+
+function syncMuteButton(button, muted) {
+  button.setAttribute("aria-label", muted ? "取消静音" : "静音");
+  button.setAttribute("title", muted ? "取消静音" : "静音");
+  button.setAttribute("aria-pressed", String(muted));
+  button.querySelector("i")?.setAttribute("data-lucide", muted ? "volume-x" : "volume-2");
+}
+
 function attachHls(video, src, key, group) {
   if (!video || !src) return;
   const store = group === "main" ? state.mainHls : state.thumbHls;
   const previous = store.get(key);
   if (previous?.src === src && video.dataset.attachedSrc === src) {
-    video.muted = group === "main" ? state.mainMuted : true;
+    video.muted = getVideoMuted(video, group);
     video.play().catch(() => {});
     return;
   }
   if (previous?.src && video.dataset.attachedSrc && playbackResourceKey(previous.src) === playbackResourceKey(src)) {
     previous.src = src;
-    video.muted = group === "main" ? state.mainMuted : true;
+    video.muted = getVideoMuted(video, group);
     hideVideoError(video);
     video.play().catch(() => {});
     return;
@@ -864,7 +903,7 @@ function attachHls(video, src, key, group) {
   video.pause();
   video.removeAttribute("src");
   video.load();
-  video.muted = group === "main" ? state.mainMuted : true;
+  video.muted = getVideoMuted(video, group);
   video.dataset.attachedSrc = src;
   hideVideoError(video);
 
