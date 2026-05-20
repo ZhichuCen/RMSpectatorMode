@@ -1,4 +1,6 @@
+const LIVE_JSON_BASE_URL = "https://schedule.scutbot.cn/api/live_json";
 const FEED_URL = "https://rm-static.djicdn.com/live_json/live_game_info.json";
+const SCHEDULE_FEED_URL = `${LIVE_JSON_BASE_URL}/schedule.json`;
 const refs = {};
 const LAYOUTS = [
   { id: "one-plus", label: "1 大 + 右侧 N 小", mainCount: 1, defaultRes: "high" },
@@ -23,6 +25,146 @@ const FOCUS_SIDES = [
   { id: "red", label: "红方优先" },
   { id: "blue", label: "蓝方优先" },
 ];
+
+// ---- Danmaku Client (Leancloud IM) ----
+
+const LEANCLOUD_APP_ID = "UqaoAgYDPakCHxtDiMXVy2Sw-gzGzoHsz";
+const LEANCLOUD_APP_KEY = "xYO2wtjhri9dJR7Vor8kDFl4";
+const LEANCLOUD_SERVER_URL = "https://uqaoagyd.lc-cn-n1-shared.com";
+
+function generateClientId() {
+  let id = localStorage.getItem("rm-danmaku-client-id");
+  if (!id) {
+    id = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    localStorage.setItem("rm-danmaku-client-id", id);
+  }
+  return id;
+}
+
+class DanmakuClient {
+  constructor() {
+    this.roomId = null;
+    this.clientId = generateClientId();
+    this.listeners = new Set();
+    this.connected = false;
+    this.rt = null;
+    this.conv = null;
+    this.sdkAvailable = false;
+  }
+
+  onMessage(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
+
+  _emit(msg) { for (const fn of this.listeners) fn(msg); }
+
+  async connect(roomId) {
+    if (this.roomId === roomId && this.connected) return;
+    await this.disconnect();
+
+    // Check if Leancloud SDK is available
+    if (typeof window.AV === "undefined") {
+      console.warn("[Danmaku] Leancloud SDK not loaded — using local-only mode");
+      this.sdkAvailable = false;
+      this.roomId = roomId;
+      return;
+    }
+
+    try {
+      const AV = window.AV;
+      if (typeof AV.init === "function") {
+        AV.init({
+          appId: LEANCLOUD_APP_ID,
+          appKey: LEANCLOUD_APP_KEY,
+          serverURL: LEANCLOUD_SERVER_URL,
+        });
+      }
+
+      const Realtime = AV.Realtime || AV.realtime;
+      if (!Realtime) {
+        console.warn("[Danmaku] AV.Realtime not available — using local-only mode");
+        this.sdkAvailable = false;
+        this.roomId = roomId;
+        return;
+      }
+
+      const client = typeof Realtime.createClient === "function"
+        ? await Realtime.createClient({ clientId: this.clientId })
+        : await new Realtime({
+          appId: LEANCLOUD_APP_ID,
+          appKey: LEANCLOUD_APP_KEY,
+          serverURL: LEANCLOUD_SERVER_URL,
+          server: {
+            RTMRouter: "https://router-g0-push.leancloud.cn",
+            api: "https://api.leancloud.cn",
+          },
+          }).createIMClient(this.clientId);
+      this.rt = client;
+      this.sdkAvailable = true;
+
+      const messageEvent = AV.Event?.MESSAGE || "message";
+      client.on(messageEvent, (msg) => {
+        const text = typeof msg.getText === "function" ? msg.getText() : (msg.text || msg.content?._lctext || "");
+        if (text && msg.from !== this.clientId) {
+          const attrs = typeof msg.getAttributes === "function" ? msg.getAttributes() : (msg.attrs || msg.attributes || {});
+          this._emit({
+            id: msg.id || `msg-${Date.now()}`,
+            text,
+            timestamp: msg.timestamp || Date.now(),
+            username: msg.from || "unknown",
+            nickname: attrs.nickname || msg.from || "",
+            schoolName: attrs.schoolName || "",
+            source: "live",
+          });
+        }
+      });
+
+      if (typeof client.login === "function") await client.login();
+      let conv = null;
+      try {
+        conv = await client.getChatRoomQuery?.().equalTo("objectId", roomId).compact(true).limit(1).first();
+      } catch (e) { /* fall back to getConversation */ }
+      if (!conv) conv = await client.getConversation(roomId, true);
+      await conv.join();
+      this.conv = conv;
+      this.roomId = roomId;
+      this.connected = true;
+    } catch (e) {
+      console.warn("[Danmaku] Connection failed, using local-only mode:", e.message || e);
+      this.connected = false;
+      this.sdkAvailable = false;
+      this.roomId = roomId;
+    }
+  }
+
+  async sendMessage(text, attrs = {}) {
+    if (!this.connected || !this.conv) return false;
+    try {
+      const AV = window.AV;
+      const TextMessage = AV.TextMessage || AV.Text;
+      if (!TextMessage) return false;
+      const message = new TextMessage(text);
+      if (typeof message.setAttributes === "function") {
+        message.setAttributes(attrs);
+      } else {
+        message.attrs = attrs;
+      }
+      await this.conv.send(message);
+      return true;
+    } catch (e) {
+      console.warn("[Danmaku] Send failed:", e.message || e);
+      return false;
+    }
+  }
+
+  async disconnect() {
+    try {
+      if (this.conv) { await this.conv.leave().catch(() => {}); this.conv = null; }
+      if (this.rt) { await this.rt.close().catch(() => {}); this.rt = null; }
+    } catch (e) { /* ignore */ }
+    this.roomId = null;
+    this.connected = false;
+    this.sdkAvailable = false;
+  }
+}
 const state = {
   zones: [],
   eventName: "赛事多视角监看系统",
@@ -41,6 +183,17 @@ const state = {
   focusSide: "all",
   cleanMode: false,
   thumbObserver: null,
+  danmakuEnabled: false,
+  danmakuClient: new DanmakuClient(),
+  danmakuMessages: [],
+  danmakuMaxMessages: 120,
+  activeTab: "streams",
+  currentMatch: null,
+  scheduleData: [],
+  scheduleLastLoadedAt: null,
+  followedMatchIds: new Set(),
+  danmakuRendererId: null,
+  scheduleZoneData: {},
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -78,9 +231,34 @@ function bindRefs() {
     "sourceCount",
     "thumbGrid",
     "emptyState",
+    "matchScoreBar",
+    "redTeamName",
+    "redTeamSchool",
+    "redTeamAvatar",
+    "blueTeamName",
+    "blueTeamSchool",
+    "blueTeamAvatar",
+    "redScore",
+    "blueScore",
+    "matchStatusBadge",
+    "matchStageLabel",
+    "matchBOLabel",
+    "matchTimeLabel",
+    "danmakuLayer",
+    "danmakuInputBar",
+    "danmakuInput",
+    "danmakuSendBtn",
+    "danmakuToggle",
+    "tabStreams",
+    "tabSchedule",
+    "schedulePanel",
+    "scheduleList",
+    "scheduleEmpty",
   ].forEach((id) => {
     refs[id] = document.getElementById(id);
   });
+  // Load followed matches from storage
+  loadFollowedMatches();
 }
 
 function bindEvents() {
@@ -90,7 +268,10 @@ function bindEvents() {
     state.selectedStreamId = "";
     state.mainStreamIds = [];
     reconcileMainSlots();
+    parseMatchFromFeed();
     render();
+    // Reconnect danmaku to new zone's chat room
+    if (state.danmakuEnabled) applyDanmakuState();
   });
   refs.viewFilter.addEventListener("input", (event) => {
     state.filter = event.target.value.trim().toLowerCase();
@@ -128,6 +309,28 @@ function bindEvents() {
     if (event.key === "Escape" && state.cleanMode) {
       setCleanMode(false);
     }
+  });
+  // Danmaku toggle
+  refs.danmakuToggle.addEventListener("click", () => {
+    state.danmakuEnabled = !state.danmakuEnabled;
+    applyDanmakuState();
+    renderIcons();
+  });
+  // Danmaku send
+  refs.danmakuSendBtn.addEventListener("click", sendDanmaku);
+  refs.danmakuInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") sendDanmaku();
+  });
+  // Tab switching
+  refs.tabStreams.addEventListener("click", () => switchTab("streams"));
+  refs.tabSchedule.addEventListener("click", () => switchTab("schedule"));
+  // Danmaku message listener
+  state.danmakuClient.onMessage((msg) => {
+    state.danmakuMessages.push(msg);
+    if (state.danmakuMessages.length > state.danmakuMaxMessages) {
+      state.danmakuMessages.splice(0, state.danmakuMessages.length - state.danmakuMaxMessages);
+    }
+    if (state.danmakuEnabled) spawnDanmakuBullet(msg);
   });
   refs.mainGrid.addEventListener("click", (event) => {
     const retryButton = event.target.closest("[data-action='retry-main']");
@@ -219,12 +422,14 @@ function applyLayoutConfig(resetResolution) {
   refs.mainResolutionSelect.disabled = layout.mainCount === 0;
   refs.previewModeSelect.value = state.previewMode;
   refs.focusSideSelect.value = state.focusSide;
-  refs.smallPanelTitle.textContent = layout.mainCount === 0 ? "全部视角" : "可切换视角";
+  if (refs.smallPanelTitle) refs.smallPanelTitle.textContent = layout.mainCount === 0 ? "全部视角" : "可切换视角";
   refs.smallPanelHint.textContent = state.previewMode === "poster"
     ? "停止小窗拉流"
     : layout.mainCount === 0
       ? "4x4 低清预览"
-      : "可见小窗低清拉流";
+      : state.activeTab === "schedule"
+        ? "点击关注比赛"
+        : "可见小窗低清拉流";
 }
 
 function setCleanMode(enabled) {
@@ -237,6 +442,17 @@ function setCleanMode(enabled) {
   const icon = refs.cleanModeButton.querySelector("i");
   if (icon) icon.setAttribute("data-lucide", state.cleanMode ? "monitor-x" : "monitor-up");
   refs.viewerLayout.dataset.clean = state.cleanMode ? "true" : "false";
+
+  // Hide score bar and danmaku in clean mode
+  refs.matchScoreBar.hidden = state.cleanMode ? true : (state.currentMatch ? false : true);
+  if (state.cleanMode && state.danmakuEnabled) {
+    refs.danmakuLayer.hidden = true;
+    refs.danmakuInputBar.hidden = true;
+  } else if (!state.cleanMode && state.danmakuEnabled) {
+    refs.danmakuLayer.hidden = false;
+    refs.danmakuInputBar.hidden = false;
+  }
+
   renderThumbs();
   syncVideoControls();
   renderIcons();
@@ -254,18 +470,37 @@ async function loadFeed() {
   setFeedStatus("warn", "正在更新");
 
   try {
-    const response = await fetch(FEED_URL, {
-      referrerPolicy: "no-referrer",
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const response = await fetchJsonWithFallback([FEED_URL], { timeoutMs: 6000 });
 
-    const payload = await response.json();
+    const payload = response.data;
     const parsed = parseLiveInfo(payload);
     state.zones = parsed.zones;
     state.eventName = parsed.eventName || "赛事多视角监看系统";
     state.lastUpdatedAt = new Date();
+
+    // Store raw zone data for schedule matching
+    if (payload?.eventData) {
+      for (const z of payload.eventData) {
+        const zid = String(z.zoneId ?? "");
+        parsed.zones.forEach(pz => {
+          if (pz.zoneId === zid) pz._raw = z;
+        });
+      }
+    }
+
+    // Parse schedule data from feed
+    const matches = parseAllMatchesFromFeed(payload);
+    if (matches.length > 0) {
+      state.scheduleData = matches;
+    }
+    fetchScheduleData().then(() => {
+      parseMatchFromFeed();
+      if (state.activeTab === "schedule") renderSchedule();
+    });
+
     reconcileSelection();
     render();
+    parseMatchFromFeed();
     setFeedStatus("ok", "已连接实时源");
   } catch (error) {
     console.error(error);
@@ -274,6 +509,30 @@ async function loadFeed() {
   } finally {
     state.isLoading = false;
   }
+}
+
+async function fetchJsonWithFallback(urls, options = {}) {
+  const timeoutMs = options.timeoutMs ?? 8000;
+  let lastError = null;
+  for (const url of urls) {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, {
+        headers: { "Accept": "application/json" },
+        referrerPolicy: "no-referrer",
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return { data: await response.json(), url };
+    } catch (error) {
+      lastError = error;
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }
+  throw lastError || new Error("fetch failed");
 }
 
 function feedErrorMessage(error) {
@@ -463,7 +722,17 @@ function render() {
   renderZones();
   renderMeta();
   renderMainPlayers();
-  renderThumbs();
+  if (state.activeTab === "schedule") {
+    destroyMissingThumbPlayers(new Set());
+    refs.thumbGrid.hidden = true;
+    refs.schedulePanel.hidden = false;
+    renderSchedule();
+  } else {
+    refs.thumbGrid.hidden = false;
+    refs.schedulePanel.hidden = true;
+    renderThumbs();
+  }
+  parseMatchFromFeed();
   renderIcons();
 }
 
@@ -1076,8 +1345,523 @@ const mainKey = (slotIndex, streamId) => `main:${slotIndex}:${streamId}`;
 const thumbKey = (streamId) => `thumb:${streamId}`;
 const cssEscape = (value) => (window.CSS?.escape ? window.CSS.escape(value) : String(value).replace(/["\\]/g, "\\$&"));
 
+// ===== Tab Switching =====
+
+function switchTab(tab) {
+  state.activeTab = tab;
+  refs.tabStreams.classList.toggle("active", tab === "streams");
+  refs.tabStreams.setAttribute("aria-selected", String(tab === "streams"));
+  refs.tabSchedule.classList.toggle("active", tab === "schedule");
+  refs.tabSchedule.setAttribute("aria-selected", String(tab === "schedule"));
+
+  const scheduleActive = tab === "schedule";
+  refs.thumbGrid.hidden = scheduleActive;
+  refs.emptyState.hidden = scheduleActive || getFilteredStreams().length > 0;
+  refs.schedulePanel.hidden = !scheduleActive;
+  refs.smallPanelHint.hidden = scheduleActive;
+
+  if (scheduleActive) {
+    destroyMissingThumbPlayers(new Set());
+    renderSchedule();
+  }
+  if (!scheduleActive) renderThumbs();
+
+  renderIcons();
+}
+
+// ===== Match Data Parsing =====
+
+function parseMatchFromFeed() {
+  // Try DJI feed zone data first, then schedule API data
+  const zone = getSelectedZone();
+  if (!zone) { state.currentMatch = null; return; }
+
+  // Try to find running match from schedule data
+  const scheduleMatches = state.scheduleData || [];
+  const zoneId = String(zone.zoneId ?? "");
+  const zoneMatches = scheduleMatches.filter(
+    (m) => String(m.zoneId) === zoneId || String(m.zoneName) === zone.zoneName
+  );
+
+  // Find currently live match or most recent
+  const liveMatch = zoneMatches.find((m) => m.status === "live") ||
+    zoneMatches.find((m) => m.status === "upcoming") || null;
+
+  if (liveMatch) {
+    state.currentMatch = liveMatch;
+  } else if (state.scheduleZoneData[zoneId]) {
+    state.currentMatch = state.scheduleZoneData[zoneId].currentMatch || null;
+  } else {
+    state.currentMatch = null;
+  }
+
+  updateScoreBar();
+}
+
+function parseAllMatchesFromFeed(rawData = null) {
+  const matches = [];
+
+  // Parse from DJI feed eventData (groupIdMatches + knockoutMatches)
+  function extractMatches(zones) {
+    const result = [];
+    for (const zone of (Array.isArray(zones) ? zones : [])) {
+      const zid = String(zone.zoneId ?? zone.id ?? "");
+      const zname = zone.zoneName || zone.name || ("站点 " + zid);
+
+      const groupNodes = zone.groupMatches?.nodes || zone.groupMatches || [];
+      for (const gm of (Array.isArray(groupNodes) ? groupNodes : [])) {
+        if (!gm) continue;
+        result.push(normalizeMatchItem(gm, zid, zname));
+      }
+
+      const knockoutNodes = zone.knockoutMatches?.nodes || zone.knockoutMatches || [];
+      for (const km of (Array.isArray(knockoutNodes) ? knockoutNodes : [])) {
+        if (!km) continue;
+        result.push(normalizeMatchItem(km, zid, zname));
+      }
+    }
+    return result;
+  }
+
+  const scheduleZones = getScheduleZones(rawData);
+  if (scheduleZones.length) {
+    matches.push(...extractMatches(scheduleZones));
+  }
+
+  if (rawData?.eventData) {
+    matches.push(...extractMatches(rawData.eventData));
+  }
+
+  // Parse from current zones
+  if (state.zones.length && !matches.length) {
+    const zoneData = state.zones.map(z => {
+      const rawZone = z._raw || {};
+      return {
+        zoneId: z.zoneId,
+        zoneName: z.zoneName,
+        groupMatches: rawZone.groupMatches,
+        knockoutMatches: rawZone.knockoutMatches,
+      };
+    });
+    matches.push(...extractMatches(zoneData));
+  }
+
+  const eventTitle = firstText(rawData?.data?.event?.title, rawData?.current_event?.title, rawData?.currentEvent?.title, rawData?.eventName, "");
+  const seenIds = new Set();
+  return matches
+    .map((match) => ({
+      ...match,
+      eventTitle: match.eventTitle || eventTitle,
+    }))
+    .filter((match) => {
+      const key = `${match.zoneId}:${match.id}:${match.redTeam.teamName}:${match.blueTeam.teamName}`;
+      if (seenIds.has(key)) return false;
+      seenIds.add(key);
+      return true;
+    })
+    .sort((a, b) => (a.startedAtTs || Number.MAX_SAFE_INTEGER) - (b.startedAtTs || Number.MAX_SAFE_INTEGER));
+}
+
+function normalizeMatchItem(item, zoneId, zoneName) {
+  const redSide = item.redSide || item.red_side || null;
+  const blueSide = item.blueSide || item.blue_side || null;
+  const redPlayer = redSide?.player || {};
+  const bluePlayer = blueSide?.player || {};
+  const redTeamObj = redPlayer.team || item.redTeam || item.red || {};
+  const blueTeamObj = bluePlayer.team || item.blueTeam || item.blue || {};
+  const redTeamName = firstText(
+    redTeamObj.name,
+    redTeamObj.teamName,
+    item.redTeamName,
+    item.redTeam,
+    item.redName,
+    item.loserPlaceholdName,
+    "红方",
+  );
+  const blueTeamName = firstText(
+    blueTeamObj.name,
+    blueTeamObj.teamName,
+    item.blueTeamName,
+    item.blueTeam,
+    item.blueName,
+    item.winnerPlaceholdName,
+    "蓝方",
+  );
+  const redCollege = firstText(item.redCollege, redTeamObj.collegeName, redTeamObj.schoolName, item.redCollegeName, "");
+  const blueCollege = firstText(item.blueCollege, blueTeamObj.collegeName, blueTeamObj.schoolName, item.blueCollegeName, "");
+  const redScore = item.redScore ?? item.redSideWinGameCount ?? redSide?.winGameCount ?? 0;
+  const blueScore = item.blueScore ?? item.blueSideWinGameCount ?? blueSide?.winGameCount ?? 0;
+  const score = String(item.score || `${redScore}:${blueScore}`);
+  const statusRaw = String(item.status || item.statusRaw || item.matchStatus || "WAITING");
+  const statusUpper = statusRaw.toUpperCase();
+  const status = /LIVE|PLAYING|STARTED|RUNNING/.test(statusUpper) ? "live" :
+    /END|FINISH|DONE/.test(statusUpper) ? "ended" : "upcoming";
+  const startAt = firstText(item.planStartedAt, item.startAt, item.startTime, item.time, "");
+  const parsedDate = parseDateValue(startAt);
+
+  return {
+    id: String(item.id || item.matchId || item.slug || `${zoneId}-${item.orderNumber || ""}`),
+    slug: String(item.slug || ""),
+    orderNumber: String(item.orderNumber || ""),
+    zoneId,
+    zoneName,
+    eventTitle: String(item.eventTitle || item.eventName || ""),
+    startAt: String(startAt),
+    startedAtTs: parsedDate ? parsedDate.getTime() : 0,
+    date: parsedDate ? formatDateKey(parsedDate) : "",
+    stage: String(item.stage || item.matchType || item.round || ""),
+    status,
+    statusRaw,
+    redTeam: { teamName: redTeamName, collegeName: redCollege, logo: firstText(item.redLogo, redTeamObj.collegeLogo, redTeamObj.logo, "") },
+    blueTeam: { teamName: blueTeamName, collegeName: blueCollege, logo: firstText(item.blueLogo, blueTeamObj.collegeLogo, blueTeamObj.logo, "") },
+    score,
+    planGameCount: Number(item.planGameCount || item.gameCount || 0),
+    replayVideo: item.replayVideo || item.replay || null,
+  };
+}
+
+function getScheduleZones(data) {
+  if (!data || typeof data !== "object") return [];
+  const graphZones = data.data?.event?.zones?.nodes;
+  if (Array.isArray(graphZones)) return graphZones;
+  const currentEvent = data.current_event || data.currentEvent;
+  if (Array.isArray(currentEvent?.zones?.nodes)) return currentEvent.zones.nodes;
+  if (Array.isArray(data.zones)) return data.zones;
+  return [];
+}
+
+function firstText(...values) {
+  for (const value of values) {
+    if (value == null || typeof value === "object") continue;
+    const text = String(value).trim();
+    if (text && text !== "-") return text;
+  }
+  return "";
+}
+
+function parseDateValue(value) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const ms = Math.abs(value) < 100000000000 ? value * 1000 : value;
+    const date = new Date(ms);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  const text = String(value || "").trim();
+  if (!text || text === "-") return null;
+  const date = new Date(text);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatDateKey(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+// ===== Score Bar =====
+
+function updateScoreBar() {
+  const match = state.currentMatch;
+  if (!match || state.cleanMode) {
+    refs.matchScoreBar.hidden = true;
+    return;
+  }
+
+  refs.matchScoreBar.hidden = false;
+
+  refs.redTeamName.textContent = match.redTeam.teamName || "红方";
+  refs.redTeamSchool.textContent = match.redTeam.collegeName || "";
+  refs.redTeamAvatar.textContent = (match.redTeam.teamName || "红").slice(0, 2);
+  refs.blueTeamName.textContent = match.blueTeam.teamName || "蓝方";
+  refs.blueTeamSchool.textContent = match.blueTeam.collegeName || "";
+  refs.blueTeamAvatar.textContent = (match.blueTeam.teamName || "蓝").slice(0, 2);
+
+  const scoreParts = parseScoreParts(match.score);
+  const redSc = scoreParts[0] || 0;
+  const blueSc = scoreParts[1] || 0;
+  refs.redScore.textContent = redSc;
+  refs.blueScore.textContent = blueSc;
+
+  refs.redScore.classList.toggle("winner", match.status === "ended" && redSc > blueSc);
+  refs.blueScore.classList.toggle("winner", match.status === "ended" && blueSc > redSc);
+
+  // Status badge
+  refs.matchStatusBadge.className = `match-status-badge ${match.status}`;
+  const statusLabels = { live: "LIVE", upcoming: "即将开始", ended: "已结束" };
+  refs.matchStatusBadge.textContent = statusLabels[match.status] || match.status.toUpperCase();
+
+  // Stage label
+  refs.matchStageLabel.textContent = match.stage ? `${match.stage}` : "";
+
+  // BO label
+  const pgc = match.planGameCount;
+  refs.matchBOLabel.textContent = pgc > 0 ? `BO${pgc}` : "";
+
+  // Time label
+  refs.matchTimeLabel.textContent = match.startAt ? formatMatchTime(match.startAt) : "";
+}
+
+function formatMatchTime(timeStr) {
+  try {
+    const d = new Date(timeStr);
+    if (!isNaN(d.getTime())) {
+      return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+    }
+  } catch (e) { /* ignore */ }
+  return timeStr || "";
+}
+
+function parseScoreParts(score) {
+  return String(score || "0:0").split(/\s*[:：-]\s*/).map(s => parseInt(s, 10) || 0);
+}
+
+// ===== Schedule Panel =====
+
+function renderSchedule() {
+  if (state.activeTab !== "schedule") return;
+
+  const matches = state.scheduleData.filter(m => {
+    if (!state.selectedZoneId) return true;
+    return String(m.zoneId) === state.selectedZoneId;
+  });
+
+  if (!matches.length) {
+    refs.scheduleList.innerHTML = "";
+    refs.scheduleEmpty.hidden = false;
+    return;
+  }
+
+  refs.scheduleEmpty.hidden = true;
+
+  // Group by date
+  const grouped = new Map();
+  for (const m of matches) {
+    const dateKey = m.date || (m.startAt ? m.startAt.slice(0, 10) : "未知日期");
+    if (!grouped.has(dateKey)) grouped.set(dateKey, []);
+    grouped.get(dateKey).push(m);
+  }
+
+  let html = "";
+  for (const [dateKey, groupMatches] of grouped) {
+    html += `<div class="schedule-date-header">${dateKey}</div>`;
+    for (const m of groupMatches) {
+      html += renderScheduleCard(m);
+    }
+  }
+  refs.scheduleList.innerHTML = html;
+
+  // Bind follow button clicks and team clicks
+  refs.scheduleList.querySelectorAll(".schedule-follow-btn").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const mid = btn.dataset.matchId;
+      if (mid) toggleFollowMatch(mid);
+    });
+  });
+  refs.scheduleList.querySelectorAll(".schedule-card").forEach(card => {
+    card.addEventListener("click", () => {
+      const mid = card.dataset.matchId;
+      if (mid && state.followedMatchIds.has(mid)) toggleFollowMatch(mid);
+    });
+  });
+}
+
+function renderScheduleCard(m) {
+  const scoreParts = parseScoreParts(m.score);
+  const redSc = scoreParts[0] || 0;
+  const blueSc = scoreParts[1] || 0;
+  const followed = state.followedMatchIds.has(m.id);
+  const followIcon = followed ? "bell-ring" : "bell";
+  const statusLabels = { live: "LIVE", upcoming: "即将", ended: "已结束" };
+
+  return `
+    <div class="schedule-card" data-match-id="${escapeAttr(m.id)}">
+      <div class="schedule-card-header">
+        <span class="schedule-event-title">${escapeHtml(m.eventTitle || "赛事")}</span>
+        <div class="schedule-card-badges">
+          <span class="schedule-badge schedule-badge-match-status ${m.status}">${statusLabels[m.status] || m.status}</span>
+          <span class="schedule-badge match-zone">${escapeHtml(m.zoneName)}</span>
+          ${m.planGameCount > 0 ? `<span class="schedule-badge match-bo">BO${m.planGameCount}</span>` : ""}
+        </div>
+      </div>
+      <div class="schedule-card-teams">
+        <div class="schedule-team red">
+          <div>
+            <div class="schedule-team-name">${escapeHtml(m.redTeam.teamName)}</div>
+            <div class="schedule-team-school">${escapeHtml(m.redTeam.collegeName)}</div>
+          </div>
+        </div>
+        <div class="schedule-score-mini">
+          <span>${redSc}</span>
+          <span class="schedule-score-sep">:</span>
+          <span>${blueSc}</span>
+        </div>
+        <div class="schedule-team blue">
+          <div>
+            <div class="schedule-team-name">${escapeHtml(m.blueTeam.teamName)}</div>
+            <div class="schedule-team-school">${escapeHtml(m.blueTeam.collegeName)}</div>
+          </div>
+        </div>
+      </div>
+      <div class="schedule-card-footer">
+        <span class="schedule-time">${formatMatchTime(m.startAt) || "时间待定"}</span>
+        <button class="schedule-follow-btn ${followed ? "followed" : ""}" data-match-id="${escapeAttr(m.id)}" type="button">
+          <i data-lucide="${followIcon}"></i>
+          <span>${followed ? "已关注" : "关注"}</span>
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+// ===== Follow System =====
+
+function toggleFollowMatch(matchId) {
+  if (state.followedMatchIds.has(matchId)) {
+    state.followedMatchIds.delete(matchId);
+  } else {
+    state.followedMatchIds.add(matchId);
+  }
+  saveFollowedMatches();
+  if (state.activeTab === "schedule") renderSchedule();
+  renderIcons();
+}
+
+function loadFollowedMatches() {
+  try {
+    const raw = localStorage.getItem("rm-followed-matches");
+    if (raw) {
+      const arr = JSON.parse(raw);
+      state.followedMatchIds = new Set(Array.isArray(arr) ? arr : []);
+    }
+  } catch (e) {
+    state.followedMatchIds = new Set();
+  }
+}
+
+function saveFollowedMatches() {
+  try {
+    localStorage.setItem("rm-followed-matches", JSON.stringify([...state.followedMatchIds]));
+  } catch (e) { /* ignore */ }
+}
+
+// ===== Danmaku =====
+
+async function applyDanmakuState() {
+  const enabled = state.danmakuEnabled && !state.cleanMode;
+  refs.danmakuToggle.setAttribute("aria-pressed", String(state.danmakuEnabled));
+  refs.danmakuToggle.classList.toggle("active", state.danmakuEnabled);
+  const icon = refs.danmakuToggle.querySelector("i");
+  if (icon) icon.setAttribute("data-lucide", state.danmakuEnabled ? "message-square-text" : "message-square-off");
+  refs.danmakuToggle.querySelector("span").textContent = state.danmakuEnabled ? "弹幕开" : "弹幕";
+  refs.danmakuLayer.hidden = !enabled;
+  refs.danmakuInputBar.hidden = !enabled;
+
+  if (enabled) {
+    // Connect to danmaku room
+    const zone = getSelectedZone();
+    const roomId = zone?._raw?.chatRoomId || "";
+    if (roomId && state.danmakuClient) {
+      state.danmakuClient.connect(roomId).catch(() => {});
+    }
+  } else {
+    if (state.danmakuClient) state.danmakuClient.disconnect().catch(() => {});
+  }
+  renderIcons();
+}
+
+async function sendDanmaku() {
+  const text = refs.danmakuInput.value.trim();
+  if (!text) return;
+
+  if (!state.danmakuClient?.connected) {
+    // Local-only mode: add message locally
+    const localMsg = {
+      id: `local-${Date.now()}`,
+      text,
+      timestamp: Date.now(),
+      username: "me",
+      nickname: "我",
+      schoolName: "",
+      source: "local",
+    };
+    state.danmakuMessages.push(localMsg);
+    if (state.danmakuMessages.length > state.danmakuMaxMessages) {
+      state.danmakuMessages.splice(0, state.danmakuMessages.length - state.danmakuMaxMessages);
+    }
+    spawnDanmakuBullet(localMsg);
+  } else {
+    const sent = await state.danmakuClient.sendMessage(text, {
+      nickname: "观众",
+      schoolName: "",
+    });
+    if (!sent) {
+      // Still show locally if send fails
+      const localMsg = {
+        id: `local-${Date.now()}`,
+        text,
+        timestamp: Date.now(),
+        username: "me",
+        nickname: "我",
+        schoolName: "",
+        source: "local",
+      };
+      spawnDanmakuBullet(localMsg);
+    }
+  }
+
+  refs.danmakuInput.value = "";
+}
+
+function spawnDanmakuBullet(msg) {
+  if (!state.danmakuEnabled || refs.danmakuLayer.hidden) return;
+
+  const el = document.createElement("div");
+  el.className = "danmaku-msg";
+  el.textContent = msg.text;
+
+  // Randomize vertical position
+  const trackHeight = 28;
+  const maxTracks = Math.floor(refs.danmakuLayer.clientHeight / trackHeight) || 6;
+  const track = Math.floor(Math.random() * maxTracks);
+  el.style.top = `${track * trackHeight}px`;
+
+  // Set random fontSize for variety
+  const fontSize = 16 + Math.floor(Math.random() * 6);
+  el.style.fontSize = `${fontSize}px`;
+
+  // Animation speed (slightly randomize)
+  const duration = 8 + Math.random() * 4; // 8-12 seconds
+  el.style.animationDuration = `${duration}s`;
+
+  refs.danmakuLayer.appendChild(el);
+  const distance = refs.danmakuLayer.clientWidth + el.offsetWidth + 32;
+  el.style.setProperty("--danmaku-distance", `${distance}px`);
+
+  // Remove after animation completes
+  el.addEventListener("animationend", () => {
+    el.remove();
+  });
+}
+
+// ===== Schedule Data Fetching =====
+
+async function fetchScheduleData() {
+  try {
+    const { data } = await fetchJsonWithFallback([SCHEDULE_FEED_URL], { timeoutMs: 30000 });
+    const matches = parseAllMatchesFromFeed(data);
+    if (matches.length > 0) {
+      state.scheduleData = matches;
+      state.scheduleLastLoadedAt = new Date();
+      return;
+    }
+  } catch (e) {
+    console.warn("[Schedule] schedule feed failed:", e);
+  }
+}
+
 window.RMViewer = {
   parseLiveInfo,
   normalizeSources,
+  parseAllMatchesFromFeed,
   pickSource,
+  state,
 };

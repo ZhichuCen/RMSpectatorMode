@@ -4,13 +4,15 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="referrer" content="no-referrer">
-    <meta name="description" content="RoboMaster 多视角直播监看工具">
-    <title>RoboMaster Spectator Console</title>
+    <meta name="description" content="RoboMaster 多视角直播监看工具 - 弹幕、赛程、比分">
+    <title>RMLive Spectator</title>
     <link rel="icon" type="image/svg+xml" href="./favicon.svg">
     <link rel="stylesheet" href="./styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/leancloud-storage@4.15.2/dist/av-min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/leancloud-realtime@4/dist/realtime.browser.min.js" defer></script>
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js" defer></script>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
-    <script src="./app.js?v=1.4.1" defer></script>
+    <script src="./app.js?v=1.5.0" defer></script>
   </head>
   <body>
     <a class="github-corner" href="https://github.com/ZhichuCen/RMSpectatorMode" target="_blank" rel="noreferrer" aria-label="前往 GitHub 仓库">
@@ -26,7 +28,7 @@
         <h1 id="eventTitle">赛事多视角监看系统</h1>
       </div>
       <div class="header-actions">
-        <span class="version-pill">v1.4.1</span>
+        <span class="version-pill">v1.5.0</span>
         <div class="status-pill" id="feedStatus" aria-live="polite">
           <span class="status-dot"></span>
           <span>准备加载</span>
@@ -65,6 +67,10 @@
           <select id="focusSideSelect"></select>
         </label>
         <div class="control-actions">
+          <button class="icon-button text-button" id="danmakuToggle" type="button" aria-pressed="false">
+            <i data-lucide="message-square-text" aria-hidden="true"></i>
+            <span>弹幕</span>
+          </button>
           <button class="icon-button text-button" id="cleanModeButton" type="button" aria-pressed="false">
             <i data-lucide="monitor-up" aria-hidden="true"></i>
             <span>纯净</span>
@@ -76,8 +82,47 @@
         </div>
       </section>
 
+      <div id="matchScoreBar" class="match-score-bar" hidden>
+        <div class="score-bar-inner">
+          <div class="score-team score-team-red">
+            <span class="score-team-avatar" id="redTeamAvatar">红</span>
+            <div class="score-team-info">
+              <span class="score-team-name" id="redTeamName">--</span>
+              <span class="score-team-school" id="redTeamSchool"></span>
+            </div>
+          </div>
+          <div class="score-center">
+            <div class="score-status-row">
+              <span id="matchStatusBadge" class="match-status-badge">--</span>
+              <span id="matchStageLabel" class="match-stage-label"></span>
+            </div>
+            <div class="score-numbers">
+              <span class="score-value" id="redScore">0</span>
+              <span class="score-sep">:</span>
+              <span class="score-value" id="blueScore">0</span>
+            </div>
+            <div class="score-meta-row">
+              <span id="matchBOLabel" class="match-bo-label"></span>
+              <span id="matchTimeLabel" class="match-time-label"></span>
+            </div>
+          </div>
+          <div class="score-team score-team-blue">
+            <span class="score-team-avatar" id="blueTeamAvatar">蓝</span>
+            <div class="score-team-info">
+              <span class="score-team-name" id="blueTeamName">--</span>
+              <span class="score-team-school" id="blueTeamSchool"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <section class="viewer-layout" id="viewerLayout">
         <article class="main-view" aria-label="主观看视角">
+          <div class="danmaku-layer" id="danmakuLayer" hidden></div>
+          <div class="danmaku-input-bar" id="danmakuInputBar" hidden>
+            <input id="danmakuInput" type="text" placeholder="发送弹幕…" maxlength="60" autocomplete="off">
+            <button id="danmakuSendBtn" class="text-button" type="button">发送</button>
+          </div>
           <div id="mainGrid" class="main-grid"></div>
           <div id="mainEmpty" class="empty-state main-empty" hidden>
             <i data-lucide="radio" aria-hidden="true"></i>
@@ -87,10 +132,20 @@
 
         <aside id="sidePanel" class="side-panel" aria-label="视角列表">
           <div class="panel-heading">
-            <h2 id="smallPanelTitle">可切换视角</h2>
+            <div class="panel-tabs" role="tablist">
+              <button class="panel-tab active" id="tabStreams" role="tab" aria-selected="true">视角</button>
+              <button class="panel-tab" id="tabSchedule" role="tab" aria-selected="false">赛程</button>
+            </div>
             <span id="smallPanelHint">小窗优先低清</span>
           </div>
           <div id="thumbGrid" class="thumb-grid"></div>
+          <div id="schedulePanel" class="schedule-panel" hidden>
+            <div id="scheduleList" class="schedule-list"></div>
+            <div id="scheduleEmpty" class="empty-state" hidden>
+              <i data-lucide="calendar" aria-hidden="true"></i>
+              <p>当前赛区暂无赛程数据。</p>
+            </div>
+          </div>
           <div id="emptyState" class="empty-state" hidden>
             <i data-lucide="radio" aria-hidden="true"></i>
             <p>当前赛区还没有可用第一视角。</p>
